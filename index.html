@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0B0E14" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="description" content="IronHabit — Daily Home Exercise & Weekly Gym Accountability Tracker" />
+  <title>IRONHABIT — Fitness &amp; Gym Accountability</title>
+  <link rel="manifest" href="./manifest.json" />
+  <link rel="icon" type="image/svg+xml" href="./icon.svg" />
+  <link rel="apple-touch-icon" href="./icon.svg" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <div>
+      <!-- Top Header + Dual Metric Strip -->
+      <header class="top-chrome">
+        <div class="top-bar-row">
+          <div class="brand-row">
+            <span class="brand-name">IRONHABIT</span>
+            <span id="hdr-date-meta" class="brand-meta tabular-nums">LOADING</span>
+          </div>
+
+          <button id="hdr-sync-btn" class="sync-badge-btn smooth-ui" onclick="App.HeaderSyncClick()">
+            <span id="hdr-sync-dot" class="dot-indicator"></span>
+            <span id="hdr-sync-label">Local</span>
+          </button>
+        </div>
+
+        <div class="dual-metrics-grid">
+          <!-- Home Streak Metric Box -->
+          <div class="metric-box">
+            <div>
+              <div class="metric-label">Home Streak</div>
+              <div class="metric-value tabular-nums">
+                <span id="hdr-home-streak">0</span>
+                <span class="metric-unit">days</span>
+              </div>
+            </div>
+            <div class="metric-right">
+              <div id="hdr-home-status" class="text-xs font-semibold tabular-nums text-amber" style="font-size:0.75rem;font-weight:600;">0%</div>
+              <div id="hdr-home-best" class="metric-sub tabular-nums">Best: 0d</div>
+            </div>
+          </div>
+
+          <!-- Weekly Gym Metric Box -->
+          <div class="metric-box">
+            <div>
+              <div class="metric-label">Gym Weekly</div>
+              <div class="metric-value tabular-nums">
+                <span id="hdr-gym-ratio">0/4</span>
+                <span class="metric-unit">days</span>
+              </div>
+            </div>
+            <div class="metric-right">
+              <div id="hdr-gym-status" class="text-xs font-semibold tabular-nums text-amber" style="font-size:0.75rem;font-weight:600;">In Prog</div>
+              <div id="hdr-gym-streak" class="metric-sub tabular-nums">0w Streak</div>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <!-- Dynamic Screen Body -->
+      <main id="main-view" class="main-body"></main>
+    </div>
+
+    <!-- App-Wide Unobtrusive Legend Footer + Bottom Navigation -->
+    <div class="bottom-fixed-zone">
+      <div class="bottom-fixed-inner">
+        <div class="legend-footer">
+          <div class="legend-group">
+            <span class="legend-item"><span class="status-square bg-emerald" style="width:8px;height:8px;"></span>Met</span>
+            <span class="legend-item"><span class="status-square bg-amber" style="width:8px;height:8px;"></span>Incomplete</span>
+            <span class="legend-item"><span class="status-square bg-red" style="width:8px;height:8px;"></span>0 / Missed</span>
+          </div>
+          <div class="legend-group">
+            <span class="legend-item"><span style="width:8px;height:8px;border-radius:50%;background:var(--sky-400);display:inline-block;"></span>Gym Visit</span>
+            <span class="legend-item"><span style="width:10px;border-top:1px dashed var(--sky-400);display:inline-block;"></span>Target</span>
+          </div>
+        </div>
+
+        <nav class="bottom-nav-grid">
+          <button id="dock-today" class="nav-tab-btn active smooth-ui" onclick="App.SetScreen('today')">Today</button>
+          <button id="dock-calendar" class="nav-tab-btn smooth-ui" onclick="App.SetScreen('calendar')">Calendar</button>
+          <button id="dock-charts" class="nav-tab-btn smooth-ui" onclick="App.SetScreen('charts')">Charts</button>
+          <button id="dock-settings" class="nav-tab-btn smooth-ui" onclick="App.SetScreen('settings')">Goals</button>
+        </nav>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast-banner" class="toast-banner">Saved</div>
+
+  <script src="./app.js"></script>
+</body>
+</html>

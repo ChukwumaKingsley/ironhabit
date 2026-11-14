@@ -1,0 +1,21 @@
+{
+  "id": "iron-habit-fitness-tracker",
+  "name": "IronHabit — Fitness & Gym Accountability",
+  "short_name": "IronHabit",
+  "description": "Daily home exercise & weekly gym accountability tracker with streaks, Green/Red calendar, charts, and Google Drive sync.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0b0f19",
+  "theme_color": "#10b981",
+  "categories": ["fitness", "health", "lifestyle", "productivity"],
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
