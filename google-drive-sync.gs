@@ -1,23 +1,33 @@
 /**
- * IRON HABIT — Google Drive Cloud Sync Script
- * ============================================
- * This tiny script stores and syncs all your exercise & gym data in a single file
- * named "fitness-tracker-data.json" inside your own Google Drive.
+ * IRONHABIT — Password-Protected Google Drive Cloud Sync Script
+ * =============================================================
+ * Why does Google Apps Script ask for "Who has access: Anyone"?
+ * Because Google blocks cross-domain browser fetch() requests from github.io
+ * unless the endpoint is reachable without a Google cookie redirect.
  *
- * SETUP (Takes 2 minutes, never expires):
- * 1. Go to https://script.google.com and click "New project".
- * 2. Delete any code in the editor and paste this entire file.
- * 3. Click "Deploy" (top right) -> "New deployment".
- * 4. Click the gear icon next to "Select type" -> choose "Web app".
- * 5. Set:
- *    - Description: Fitness Tracker Sync
- *    - Execute as: "Me"
- *    - Who has access: "Anyone" (The URL itself has a long unguessable ID; you can also set a Secret Sync Key below!)
- * 6. Click "Deploy", authorize access to your Google Drive, and copy the "Web app URL".
- * 7. Paste the Web app URL into the app's Settings -> Cloud Sync section.
+ * To make it 100% private and authenticated, this script enforces your own
+ * SECRET_PASSKEY on every read (GET) and write (POST). Any request without
+ * your exact passkey is rejected immediately.
  */
 
 const FILE_NAME = 'fitness-tracker-data.json';
+
+// Set your own secret passkey here (must match the Passkey you enter in the app):
+const SECRET_PASSKEY = 'CHANGE_ME_TO_YOUR_SECRET_PASSKEY';
+
+function isAuthorized(key) {
+  return Boolean(
+    SECRET_PASSKEY &&
+    SECRET_PASSKEY !== 'CHANGE_ME_TO_YOUR_SECRET_PASSKEY' &&
+    key === SECRET_PASSKEY
+  );
+}
+
+function jsonResponse(obj) {
+  return ContentService
+    .createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
+}
 
 function getOrCreateFile() {
   const files = DriveApp.getFilesByName(FILE_NAME);
@@ -25,7 +35,7 @@ function getOrCreateFile() {
     return files.next();
   }
   const initialData = JSON.stringify({
-    version: 1,
+    version: 2,
     updatedAt: 0,
     payload: null
   }, null, 2);
@@ -34,39 +44,46 @@ function getOrCreateFile() {
 
 function doGet(e) {
   try {
+    const key = e && e.parameter ? e.parameter.key : '';
+    if (!isAuthorized(key)) {
+      return jsonResponse({ ok: false, error: 'Unauthorized: Invalid or missing passkey' });
+    }
     const file = getOrCreateFile();
     const content = file.getBlob().getDataAsString();
     return ContentService
       .createTextOutput(content)
       .setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
-    return ContentService
-      .createTextOutput(JSON.stringify({ error: err.toString() }))
-      .setMimeType(ContentService.MimeType.JSON);
+    return jsonResponse({ ok: false, error: err.toString() });
   }
 }
 
 function doPost(e) {
   try {
-    const body = e.postData ? e.postData.contents : '';
-    if (!body) {
-      throw new Error('Empty request body');
+    const raw = e && e.postData ? e.postData.contents : '';
+    if (!raw) {
+      return jsonResponse({ ok: false, error: 'Empty request body' });
     }
-    // Validate JSON before saving
-    const parsed = JSON.parse(body);
-    const file = getOrCreateFile();
-    file.setContent(JSON.stringify(parsed, null, 2));
+    const parsed = JSON.parse(raw);
+    if (!isAuthorized(parsed.passkey)) {
+      return jsonResponse({ ok: false, error: 'Unauthorized: Invalid or missing passkey' });
+    }
 
-    return ContentService
-      .createTextOutput(JSON.stringify({
-        ok: true,
-        updatedAt: parsed.updatedAt || Date.now(),
-        fileName: FILE_NAME
-      }))
-      .setMimeType(ContentService.MimeType.JSON);
+    const toSave = {
+      version: parsed.version || 2,
+      updatedAt: parsed.updatedAt || Date.now(),
+      payload: parsed.payload
+    };
+
+    const file = getOrCreateFile();
+    file.setContent(JSON.stringify(toSave, null, 2));
+
+    return jsonResponse({
+      ok: true,
+      updatedAt: toSave.updatedAt,
+      fileName: FILE_NAME
+    });
   } catch (err) {
-    return ContentService
-      .createTextOutput(JSON.stringify({ ok: false, error: err.toString() }))
-      .setMimeType(ContentService.MimeType.JSON);
+    return jsonResponse({ ok: false, error: err.toString() });
   }
 }

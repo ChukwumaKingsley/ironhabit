@@ -899,3 +899,38 @@ input[type="number"] {
   opacity: 1;
   transform: translateX(-50%) translateY(0);
 }
+
+/* Authentication / Passkey Lock Gate */
+.auth-gate-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background-color: rgba(11, 14, 20, 0.96);
+  backdrop-filter: blur(6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.auth-gate-card {
+  width: 100%;
+  max-width: 380px;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-slate);
+  border-radius: 4px;
+  padding: 18px 16px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.75);
+}
+
+.security-note-box {
+  background-color: var(--bg-inset);
+  border: 1px solid var(--border-inset);
+  border-left: 2px solid var(--sky-400);
+  border-radius: 2px;
+  padding: 8px 10px;
+  font-size: 0.75rem;
+  color: var(--text-slate-400);
+  line-height: 1.45;
+  margin-bottom: 10px;
+}

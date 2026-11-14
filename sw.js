@@ -1,4 +1,4 @@
-const CACHE_NAME = 'iron-habit-v1';
+const CACHE_NAME = 'iron-habit-v2';
 const ASSETS = [
   './',
   './index.html',
@@ -32,8 +32,8 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
-  // Never cache Google Apps Script sync requests
-  if (url.hostname.includes('script.google.com') || url.hostname.includes('googleusercontent.com')) {
+  // Never cache Google Apps Script or GitHub API sync requests
+  if (url.hostname.includes('script.google.com') || url.hostname.includes('googleusercontent.com') || url.hostname.includes('api.github.com')) {
     return;
   }
   event.respondWith(

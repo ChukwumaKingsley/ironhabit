@@ -24,10 +24,16 @@
             <span id="hdr-date-meta" class="brand-meta tabular-nums">LOADING</span>
           </div>
 
-          <button id="hdr-sync-btn" class="sync-badge-btn smooth-ui" onclick="App.HeaderSyncClick()">
-            <span id="hdr-sync-dot" class="dot-indicator"></span>
-            <span id="hdr-sync-label">Local</span>
-          </button>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <button id="hdr-lock-btn" class="sync-badge-btn smooth-ui" onclick="App.HeaderLockClick()" title="App Passkey Lock">
+              <span id="hdr-lock-dot" class="dot-indicator"></span>
+              <span id="hdr-lock-label">Set Passkey</span>
+            </button>
+            <button id="hdr-sync-btn" class="sync-badge-btn smooth-ui" onclick="App.HeaderSyncClick()">
+              <span id="hdr-sync-dot" class="dot-indicator"></span>
+              <span id="hdr-sync-label">Local</span>
+            </button>
+          </div>
         </div>
 
         <div class="dual-metrics-grid">
@@ -91,6 +97,9 @@
       </div>
     </div>
   </div>
+
+  <!-- Full-Screen Passkey / PIN Authentication Gate -->
+  <div id="auth-gate-overlay" class="auth-gate-overlay" style="display:none;"></div>
 
   <div id="toast-banner" class="toast-banner">Saved</div>
 

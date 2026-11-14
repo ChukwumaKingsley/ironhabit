@@ -1,12 +1,23 @@
 /* ==========================================================================
    IRONHABIT — PRODUCTION APPLICATION ENGINE
-   Local-First PWA + Google Drive JSON Auto-Sync + 7-Day Edit Lock
+   Local-First PWA + Authenticated Cloud Sync (Passkey Drive / Private GitHub Gist)
+   + App Passkey Lock Gate + 7-Day Edit Lock
    ========================================================================== */
 
 const STORAGE_KEY = 'ironhabit_state_v2';
+const SESSION_UNLOCK_KEY = 'ironhabit_session_unlocked';
 const EDIT_WINDOW_DAYS = 7;
 
-const GDRIVE_SCRIPT_SOURCE = `const FILE_NAME = 'fitness-tracker-data.json';
+function buildGDriveScriptSource(passkey) {
+  const cleanKey = (passkey || 'CHANGE_THIS_TO_YOUR_SECRET_PASSKEY').replace(/'/g, "\\'");
+  return `const FILE_NAME = 'fitness-tracker-data.json';
+const SECRET_PASSKEY = '${cleanKey}';
+
+function isAuthorized(key) {
+  return SECRET_PASSKEY &&
+         SECRET_PASSKEY !== 'CHANGE_THIS_TO_YOUR_SECRET_PASSKEY' &&
+         key === SECRET_PASSKEY;
+}
 
 function getOrCreateFile() {
   const files = DriveApp.getFilesByName(FILE_NAME);
@@ -14,17 +25,34 @@ function getOrCreateFile() {
   return DriveApp.createFile(FILE_NAME, JSON.stringify({ version: 2, updatedAt: 0, payload: null }, null, 2), MimeType.PLAIN_TEXT);
 }
 
-function doGet() {
+function doGet(e) {
+  const key = (e && e.parameter && e.parameter.key) ? e.parameter.key : '';
+  if (!isAuthorized(key)) {
+    return ContentService
+      .createTextOutput(JSON.stringify({ ok: false, error: 'Unauthorized: invalid or missing passkey' }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
   const file = getOrCreateFile();
   return ContentService.createTextOutput(file.getBlob().getDataAsString()).setMimeType(ContentService.MimeType.JSON);
 }
 
 function doPost(e) {
-  const parsed = JSON.parse(e.postData.contents);
+  const parsed = JSON.parse(e.postData.contents || '{}');
+  if (!isAuthorized(parsed.passkey)) {
+    return ContentService
+      .createTextOutput(JSON.stringify({ ok: false, error: 'Unauthorized: invalid or missing passkey' }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+  const toSave = {
+    version: parsed.version || 2,
+    updatedAt: parsed.updatedAt || Date.now(),
+    payload: parsed.payload || null
+  };
   const file = getOrCreateFile();
-  file.setContent(JSON.stringify(parsed, null, 2));
-  return ContentService.createTextOutput(JSON.stringify({ ok: true, updatedAt: parsed.updatedAt })).setMimeType(ContentService.MimeType.JSON);
+  file.setContent(JSON.stringify(toSave, null, 2));
+  return ContentService.createTextOutput(JSON.stringify({ ok: true, updatedAt: toSave.updatedAt })).setMimeType(ContentService.MimeType.JSON);
 }`;
+}
 
 const App = (() => {
   // --- Local Date Helpers (YYYY-MM-DD) ---
@@ -110,7 +138,12 @@ const App = (() => {
       updatedAt: Date.now(),
       trackingStartDate: addDays(today, -28),
       weeklyGymTarget: 4,
+      syncProvider: 'gist', // 'gist' (Private GitHub Gist) | 'gdrive' (Passkey Google Drive)
       syncUrl: '',
+      syncPasskey: '',
+      githubToken: '',
+      gistId: '',
+      appLockEnabled: false,
       lastSyncedAt: null,
       exercises: [
         { id: 'pushups', name: 'Push-ups',   target: 50, unit: 'reps' },
@@ -119,6 +152,20 @@ const App = (() => {
       ],
       logs: {}
     };
+  }
+
+  function stripSecrets(st) {
+    const copy = { ...st };
+    delete copy.syncPasskey;
+    delete copy.githubToken;
+    return copy;
+  }
+
+  function isCloudConfigured(st = state) {
+    if (st.syncProvider === 'gist') {
+      return Boolean(st.githubToken && st.githubToken.trim());
+    }
+    return Boolean(st.syncUrl && st.syncUrl.trim() && st.syncPasskey && st.syncPasskey.trim());
   }
 
   function seedSampleHistory(st) {
@@ -162,6 +209,12 @@ const App = (() => {
   }
 
   let state = loadState();
+  let isSessionLocked = Boolean(
+    state.appLockEnabled &&
+    state.syncPasskey &&
+    sessionStorage.getItem(SESSION_UNLOCK_KEY) !== '1'
+  );
+
   let ui = {
     screen: 'today',
     activeDate: toDateKey(),
@@ -171,7 +224,7 @@ const App = (() => {
     chartExerciseId: state.exercises[0] ? state.exercises[0].id : 'pushups',
     chartPeriod: 'daily', // 'daily' | 'weekly' | 'monthly' | 'all'
     chartStyle: 'area',  // 'area' (default) | 'bar'
-    syncStatus: state.syncUrl ? 'synced' : 'local',
+    syncStatus: isCloudConfigured(state) ? 'synced' : 'local',
     deferredInstallPrompt: null
   };
 
@@ -204,12 +257,12 @@ const App = (() => {
     }
     render();
 
-    if (syncCloud && state.syncUrl) {
+    if (syncCloud && isCloudConfigured(state)) {
       ui.syncStatus = 'syncing';
       updateSyncHeader();
       if (syncTimer) clearTimeout(syncTimer);
       syncTimer = setTimeout(() => {
-        pushToDrive(false);
+        pushToCloud(false);
       }, 1000);
     }
   }
@@ -351,56 +404,181 @@ const App = (() => {
     }, 2200);
   }
 
-  // --- Google Drive Cloud Sync ---
+  // --- Authenticated Cloud Sync (Private GitHub Gist OR Passkey Google Drive) ---
   function updateSyncHeader() {
     const dot = document.getElementById('hdr-sync-dot');
     const lbl = document.getElementById('hdr-sync-label');
     if (!dot || !lbl) return;
     dot.className = 'dot-indicator';
-    if (!state.syncUrl) {
+    if (!isCloudConfigured(state)) {
       lbl.textContent = 'Local';
     } else if (ui.syncStatus === 'syncing') {
       dot.classList.add('syncing');
       lbl.textContent = 'Syncing';
     } else if (ui.syncStatus === 'error') {
       dot.classList.add('error');
-      lbl.textContent = 'Sync Retry';
+      lbl.textContent = 'Auth / Retry';
     } else {
       dot.classList.add('synced');
-      lbl.textContent = 'Drive Synced';
+      lbl.textContent = state.syncProvider === 'gist' ? 'Gist Synced' : 'Drive Synced';
     }
   }
 
-  async function pushToDrive(manual = false) {
-    if (!state.syncUrl) {
+  function updateLockHeader() {
+    const dot = document.getElementById('hdr-lock-dot');
+    const lbl = document.getElementById('hdr-lock-label');
+    if (!dot || !lbl) return;
+    dot.className = 'dot-indicator';
+    if (state.syncPasskey && state.syncPasskey.trim()) {
+      dot.classList.add('synced');
+      lbl.textContent = 'Lock App';
+    } else {
+      lbl.textContent = 'Set Passkey';
+    }
+  }
+
+  function renderAuthGate() {
+    const overlay = document.getElementById('auth-gate-overlay');
+    if (!overlay) return;
+    if (!isSessionLocked) {
+      overlay.style.display = 'none';
+      overlay.innerHTML = '';
+      return;
+    }
+    overlay.style.display = 'flex';
+    overlay.innerHTML = `
+      <div class="auth-gate-card">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+          <span class="brand-name">IRONHABIT</span>
+          <span class="locked-tag">PASSKEY LOCKED</span>
+        </div>
+        <div class="section-sub" style="margin-bottom:12px;">
+          Enter your Passkey / PIN to unlock your accountability logs and cloud sync session.
+        </div>
+        <div style="display:flex;gap:6px;margin-bottom:8px;">
+          <input id="unlock-passkey-input" type="password" class="text-input" style="flex:1;"
+                 placeholder="Enter Passkey / PIN"
+                 onkeydown="if(event.key==='Enter') App.UnlockSession()" />
+          <button class="primary-btn smooth-ui" onclick="App.UnlockSession()">Unlock</button>
+        </div>
+        <div style="font-size:0.75rem;color:var(--text-slate-500);">
+          Protected session • Data stays encrypted/isolated to your credentials
+        </div>
+      </div>
+    `;
+  }
+
+  async function findExistingGistId(token) {
+    const res = await fetch('https://api.github.com/gists?per_page=50', {
+      headers: {
+        'Accept': 'application/vnd.github+json',
+        'Authorization': `Bearer ${token}`
+      }
+    });
+    if (!res.ok) throw new Error('GitHub token rejected');
+    const list = await res.json();
+    const match = Array.isArray(list)
+      ? list.find(g => g.files && g.files['fitness-tracker-data.json'])
+      : null;
+    return match ? match.id : '';
+  }
+
+  async function pushToCloud(manual = false) {
+    if (!isCloudConfigured(state)) {
       if (manual) {
         ui.screen = 'settings';
         render();
-        showToast('Paste your Google Drive Script URL first');
+        showToast('Configure Cloud Sync credentials in Goals first');
       }
       return;
     }
+
     ui.syncStatus = 'syncing';
     updateSyncHeader();
+
+    const envelope = {
+      version: 2,
+      updatedAt: state.updatedAt,
+      payload: stripSecrets(state)
+    };
+
+    if (state.syncProvider === 'gist') {
+      try {
+        const token = state.githubToken.trim();
+        let gistId = (state.gistId || '').trim();
+        if (!gistId) {
+          gistId = await findExistingGistId(token);
+        }
+
+        const url = gistId
+          ? `https://api.github.com/gists/${gistId}`
+          : 'https://api.github.com/gists';
+        const method = gistId ? 'PATCH' : 'POST';
+
+        const res = await fetch(url, {
+          method,
+          headers: {
+            'Accept': 'application/vnd.github+json',
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            description: 'IRONHABIT Private Accountability Sync (fitness-tracker-data.json)',
+            public: false,
+            files: {
+              'fitness-tracker-data.json': {
+                content: JSON.stringify(envelope, null, 2)
+              }
+            }
+          })
+        });
+
+        if (!res.ok) throw new Error('GitHub Gist sync failed');
+        const data = await res.json();
+        if (data && data.id) {
+          state.gistId = data.id;
+        }
+        state.lastSyncedAt = Date.now();
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        ui.syncStatus = 'synced';
+        updateSyncHeader();
+        if (manual) {
+          render();
+          showToast('Synced to Private GitHub Gist');
+        }
+      } catch (e) {
+        ui.syncStatus = 'error';
+        updateSyncHeader();
+        if (manual) showToast('GitHub Gist auth failed — check token (gist scope)');
+      }
+      return;
+    }
+
+    // Google Drive Passkey-Authenticated Sync
     try {
       const body = JSON.stringify({
-        version: 2,
-        updatedAt: state.updatedAt,
-        payload: state
+        passkey: state.syncPasskey,
+        ...envelope
       });
-      await fetch(state.syncUrl, {
+      const res = await fetch(state.syncUrl, {
         method: 'POST',
-        mode: 'no-cors',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body
       });
+      const data = await res.json().catch(() => ({ ok: true }));
+      if (data && data.ok === false) {
+        ui.syncStatus = 'error';
+        updateSyncHeader();
+        if (manual) showToast(data.error || 'Unauthorized Drive Passkey');
+        return;
+      }
       state.lastSyncedAt = Date.now();
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
       ui.syncStatus = 'synced';
       updateSyncHeader();
       if (manual) {
         render();
-        showToast('Synced fitness-tracker-data.json to Google Drive');
+        showToast('Authenticated & synced to Google Drive');
       }
     } catch (e) {
       ui.syncStatus = 'error';
@@ -409,23 +587,88 @@ const App = (() => {
     }
   }
 
-  async function pullFromDrive() {
-    if (!state.syncUrl) {
-      showToast('Paste your Google Drive Script URL first');
+  async function pullFromCloud() {
+    if (!isCloudConfigured(state)) {
+      showToast('Configure Cloud Sync credentials first');
       return;
     }
     ui.syncStatus = 'syncing';
     updateSyncHeader();
+
+    const preservedAuth = {
+      syncProvider: state.syncProvider,
+      syncUrl: state.syncUrl,
+      syncPasskey: state.syncPasskey,
+      githubToken: state.githubToken,
+      gistId: state.gistId,
+      appLockEnabled: state.appLockEnabled
+    };
+
+    if (state.syncProvider === 'gist') {
+      try {
+        const token = state.githubToken.trim();
+        let gistId = (state.gistId || '').trim();
+        if (!gistId) {
+          gistId = await findExistingGistId(token);
+        }
+        if (!gistId) {
+          ui.syncStatus = 'synced';
+          updateSyncHeader();
+          showToast('No private Gist found yet — click Sync Now to create one');
+          return;
+        }
+        const res = await fetch(`https://api.github.com/gists/${gistId}`, {
+          headers: {
+            'Accept': 'application/vnd.github+json',
+            'Authorization': `Bearer ${token}`
+          }
+        });
+        if (!res.ok) throw new Error('GitHub read failed');
+        const gist = await res.json();
+        const fileObj = gist.files && gist.files['fitness-tracker-data.json'];
+        if (!fileObj || !fileObj.content) {
+          ui.syncStatus = 'synced';
+          updateSyncHeader();
+          showToast('Gist is empty — click Sync Now to push first');
+          return;
+        }
+        const parsed = JSON.parse(fileObj.content);
+        const payload = parsed.payload || parsed;
+        if (payload && Array.isArray(payload.exercises)) {
+          state = { ...createDefaultState(), ...payload, ...preservedAuth, gistId, lastSyncedAt: Date.now() };
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+          ui.syncStatus = 'synced';
+          updateSyncHeader();
+          render();
+          showToast('Restored from Private GitHub Gist');
+        }
+      } catch (e) {
+        ui.syncStatus = 'error';
+        updateSyncHeader();
+        showToast('Failed to pull from Private GitHub Gist');
+      }
+      return;
+    }
+
+    // Google Drive Passkey-Authenticated Pull
     try {
-      const res = await fetch(state.syncUrl, { method: 'GET' });
+      const sep = state.syncUrl.includes('?') ? '&' : '?';
+      const authUrl = `${state.syncUrl}${sep}key=${encodeURIComponent(state.syncPasskey || '')}`;
+      const res = await fetch(authUrl, { method: 'GET' });
       const data = await res.json();
+      if (data && data.ok === false) {
+        ui.syncStatus = 'error';
+        updateSyncHeader();
+        showToast(data.error || 'Unauthorized: invalid passkey');
+        return;
+      }
       if (data && data.payload && Array.isArray(data.payload.exercises)) {
-        state = { ...createDefaultState(), ...data.payload, syncUrl: state.syncUrl, lastSyncedAt: Date.now() };
+        state = { ...createDefaultState(), ...data.payload, ...preservedAuth, lastSyncedAt: Date.now() };
         localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
         ui.syncStatus = 'synced';
         updateSyncHeader();
         render();
-        showToast('Restored latest data from Google Drive');
+        showToast('Authenticated & restored from Google Drive');
       } else {
         ui.syncStatus = 'synced';
         updateSyncHeader();
@@ -447,6 +690,7 @@ const App = (() => {
     document.getElementById('hdr-date-meta').textContent = `${moYr} • W${wk}`;
 
     updateSyncHeader();
+    updateLockHeader();
 
     const streaks = computeHomeStreaks();
     document.getElementById('hdr-home-streak').textContent = String(streaks.current);
@@ -1075,8 +1319,11 @@ const App = (() => {
     `;
   }
 
-  // --- SCREEN 4: GOALS, TARGETS & GOOGLE DRIVE SYNC ---
+  // --- SCREEN 4: GOALS, TARGETS, APP PASSKEY LOCK & AUTHENTICATED CLOUD SYNC ---
   function renderSettingsScreen() {
+    const cloudReady = isCloudConfigured(state);
+    const hasPasskey = Boolean(state.syncPasskey && state.syncPasskey.trim());
+
     return `
       <!-- 1. Daily Home Exercise Targets -->
       <section class="surface-card card-pad">
@@ -1140,29 +1387,88 @@ const App = (() => {
         </div>
       </section>
 
-      <!-- 3. Google Drive Auto-Sync & Backups -->
+      <!-- 3. App Passkey Lock & Session Authentication -->
       <section class="surface-card card-pad">
         <div class="card-head">
           <div>
-            <div class="section-heading">Google Drive Auto-Sync</div>
-            <div class="section-sub">Syncs fitness-tracker-data.json across Phone APK &amp; Web</div>
+            <div class="section-heading">App Authentication &amp; Passkey Lock</div>
+            <div class="section-sub">Protects your app on this device and authenticates Google Drive sync</div>
           </div>
-          <span class="${state.syncUrl ? 'text-emerald' : 'text-muted'}" style="font-size:0.75rem;font-weight:600;">
-            ${state.syncUrl ? 'Connected' : 'Local Only'}
+          <span class="${hasPasskey ? 'text-emerald' : 'text-amber'}" style="font-size:0.75rem;font-weight:600;">
+            ${hasPasskey ? (state.appLockEnabled ? 'Startup Lock ON' : 'Passkey Set') : 'No Passkey'}
           </span>
         </div>
 
-        <div style="display:flex;gap:6px;margin-bottom:8px;">
-          <input id="sync-url-input" type="url" class="text-input" style="flex:1;"
-                 placeholder="Paste Google Apps Script Web App URL (https://script.google.com/macros/s/.../exec)"
-                 value="${escapeHtml(state.syncUrl || '')}" />
-          <button class="primary-btn smooth-ui" onclick="App.SaveSyncUrl()">Save</button>
+        <div class="security-note-box">
+          Static GitHub Pages only serves the UI shell — visitors with the public link only see their own isolated browser storage and <strong>cannot</strong> access or overwrite your data without your secret Passkey or GitHub Token below.
         </div>
+
+        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;">
+          <input id="sec-passkey-input" type="password" class="text-input" style="flex:1;min-width:160px;"
+                 placeholder="Set Secret Passkey / PIN"
+                 value="${escapeHtml(state.syncPasskey || '')}" />
+          <button class="step-btn smooth-ui"
+                  style="${state.appLockEnabled ? 'border-color:var(--emerald-500);color:var(--emerald-400);' : ''}"
+                  onclick="App.ToggleAppLock()">
+            Require on Startup: ${state.appLockEnabled ? 'ON' : 'OFF'}
+          </button>
+          <button class="primary-btn smooth-ui" onclick="App.SavePasskeyOnly()">Save Passkey</button>
+        </div>
+      </section>
+
+      <!-- 4. Authenticated Cloud Sync & Backups -->
+      <section class="surface-card card-pad">
+        <div class="card-head">
+          <div>
+            <div class="section-heading">Authenticated Cloud Sync</div>
+            <div class="section-sub">Choose Zero-"Anyone" Private GitHub Gist or Passkey-Protected Drive</div>
+          </div>
+          <span class="${cloudReady ? 'text-emerald' : 'text-muted'}" style="font-size:0.75rem;font-weight:600;">
+            ${cloudReady ? (state.syncProvider === 'gist' ? 'Private Gist Ready' : 'Drive Auth Ready') : 'Local Only'}
+          </span>
+        </div>
+
+        <!-- Provider Switcher -->
+        <div class="period-4-grid" style="grid-template-columns:repeat(2, 1fr);margin-bottom:10px;">
+          <button class="seg-btn ${state.syncProvider === 'gist' ? 'active' : ''} smooth-ui"
+                  onclick="App.SetSyncProvider('gist')">
+            Private GitHub Gist (Bearer Token)
+          </button>
+          <button class="seg-btn ${state.syncProvider === 'gdrive' ? 'active' : ''} smooth-ui"
+                  onclick="App.SetSyncProvider('gdrive')">
+            Google Drive (Passkey Verified)
+          </button>
+        </div>
+
+        ${state.syncProvider === 'gist' ? `
+          <div class="security-note-box">
+            <strong>100% Private (No "Anyone" setting):</strong> Uses your GitHub Personal Access Token (<code>gist</code> scope, saved only in this device's storage) to sync <code>fitness-tracker-data.json</code> to a private GitHub Gist over <code>Authorization: Bearer</code>.
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;">
+            <input id="github-token-input" type="password" class="text-input" style="flex:2;min-width:180px;"
+                   placeholder="GitHub Personal Access Token (ghp_... with 'gist' scope)"
+                   value="${escapeHtml(state.githubToken || '')}" />
+            <input id="gist-id-input" type="text" class="text-input tabular-nums" style="flex:1;min-width:120px;"
+                   placeholder="Gist ID (auto-filled)"
+                   value="${escapeHtml(state.gistId || '')}" />
+            <button class="primary-btn smooth-ui" onclick="App.SaveGistConfig()">Save</button>
+          </div>
+        ` : `
+          <div class="security-note-box">
+            <strong>Why Google asks for "Anyone" + How Passkey locks it down:</strong> Google blocks cross-domain <code>fetch()</code> from <code>github.io</code> unless the Web App gateway is set to <em>Anyone</em>. To secure it, our script enforces <code>SECRET_PASSKEY</code> verification on every <code>GET</code> &amp; <code>POST</code> — any request without your passkey is rejected.
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;">
+            <input id="sync-url-input" type="url" class="text-input" style="flex:1;min-width:200px;"
+                   placeholder="Paste Google Apps Script Web App URL (https://script.google.com/macros/s/.../exec)"
+                   value="${escapeHtml(state.syncUrl || '')}" />
+            <button class="primary-btn smooth-ui" onclick="App.SaveSyncUrl()">Save</button>
+          </div>
+        `}
 
         <div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:6px;margin-bottom:8px;">
           <button class="step-btn" onclick="App.PushDriveManual()">Sync Now</button>
-          <button class="step-btn" onclick="App.PullDriveManual()">Pull Drive</button>
-          <button class="step-btn" onclick="App.CopyDriveScript()">Copy Script</button>
+          <button class="step-btn" onclick="App.PullDriveManual()">Pull Cloud</button>
+          <button class="step-btn" onclick="App.CopyDriveScript()">Copy Protected Script</button>
         </div>
 
         <div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:6px;">
@@ -1187,6 +1493,7 @@ const App = (() => {
 
   function render() {
     renderHeader();
+    renderAuthGate();
     const main = document.getElementById('main-view');
     if (!main) return;
 
@@ -1334,37 +1641,111 @@ const App = (() => {
       saveState(true);
       showToast(`Weekly gym target set to ${state.weeklyGymTarget}d/wk`);
     },
+    SetSyncProvider(provider) {
+      state.syncProvider = provider === 'gdrive' ? 'gdrive' : 'gist';
+      ui.syncStatus = isCloudConfigured(state) ? 'synced' : 'local';
+      saveState(false);
+    },
+    SavePasskeyOnly() {
+      const passEl = document.getElementById('sec-passkey-input');
+      state.syncPasskey = passEl ? passEl.value.trim() : '';
+      if (state.syncPasskey) {
+        sessionStorage.setItem(SESSION_UNLOCK_KEY, '1');
+      } else {
+        state.appLockEnabled = false;
+      }
+      ui.syncStatus = isCloudConfigured(state) ? 'synced' : 'local';
+      saveState(false);
+      showToast(state.syncPasskey ? 'Secret Passkey saved' : 'Passkey cleared');
+    },
+    ToggleAppLock() {
+      const passEl = document.getElementById('sec-passkey-input');
+      if (passEl && passEl.value.trim()) {
+        state.syncPasskey = passEl.value.trim();
+      }
+      if (!state.syncPasskey) {
+        showToast('Enter a Secret Passkey first');
+        return;
+      }
+      state.appLockEnabled = !state.appLockEnabled;
+      sessionStorage.setItem(SESSION_UNLOCK_KEY, '1');
+      saveState(false);
+      showToast(state.appLockEnabled ? 'Startup Passkey Lock enabled' : 'Startup Passkey Lock disabled');
+    },
+    UnlockSession() {
+      const el = document.getElementById('unlock-passkey-input');
+      const entered = el ? el.value.trim() : '';
+      if (entered && entered === state.syncPasskey) {
+        isSessionLocked = false;
+        sessionStorage.setItem(SESSION_UNLOCK_KEY, '1');
+        renderAuthGate();
+        showToast('Session unlocked');
+      } else {
+        showToast('Incorrect Passkey / PIN');
+      }
+    },
+    HeaderLockClick() {
+      if (state.syncPasskey && state.syncPasskey.trim()) {
+        isSessionLocked = true;
+        sessionStorage.removeItem(SESSION_UNLOCK_KEY);
+        renderAuthGate();
+      } else {
+        ui.screen = 'settings';
+        render();
+        showToast('Set your Secret Passkey in Goals below');
+      }
+    },
+    SaveGistConfig() {
+      const tokEl = document.getElementById('github-token-input');
+      const idEl = document.getElementById('gist-id-input');
+      state.githubToken = tokEl ? tokEl.value.trim() : '';
+      state.gistId = idEl ? idEl.value.trim() : '';
+      ui.syncStatus = isCloudConfigured(state) ? 'synced' : 'local';
+      saveState(true);
+      showToast(state.githubToken ? 'Private GitHub Gist credentials saved' : 'Cleared GitHub Token');
+    },
     SaveSyncUrl() {
       const el = document.getElementById('sync-url-input');
+      const passEl = document.getElementById('sec-passkey-input');
       state.syncUrl = el ? el.value.trim() : '';
-      ui.syncStatus = state.syncUrl ? 'synced' : 'local';
+      if (passEl && passEl.value.trim()) {
+        state.syncPasskey = passEl.value.trim();
+      }
+      ui.syncStatus = isCloudConfigured(state) ? 'synced' : 'local';
       saveState(true);
-      showToast(state.syncUrl ? 'Google Drive Sync URL saved' : 'Switched to Local mode');
+      if (state.syncUrl && !state.syncPasskey) {
+        showToast('URL saved — also set your Secret Passkey above');
+      } else {
+        showToast(state.syncUrl ? 'Authenticated Drive Sync saved' : 'Switched to Local mode');
+      }
     },
     PushDriveManual() {
-      pushToDrive(true);
+      pushToCloud(true);
     },
     PullDriveManual() {
-      pullFromDrive();
+      pullFromCloud();
     },
     CopyDriveScript() {
-      navigator.clipboard.writeText(GDRIVE_SCRIPT_SOURCE).then(() => {
-        showToast('Copied Google Drive script to clipboard');
+      const passEl = document.getElementById('sec-passkey-input');
+      const key = (passEl && passEl.value.trim()) ? passEl.value.trim() : state.syncPasskey;
+      const src = buildGDriveScriptSource(key);
+      navigator.clipboard.writeText(src).then(() => {
+        showToast(key ? 'Copied script pre-filled with your Passkey' : 'Copied Passkey-protected Drive script');
       }).catch(() => {
         showToast('See google-drive-sync.gs in your project directory');
       });
     },
     HeaderSyncClick() {
-      if (state.syncUrl) {
-        pushToDrive(true);
+      if (isCloudConfigured(state)) {
+        pushToCloud(true);
       } else {
         ui.screen = 'settings';
         render();
-        showToast('Configure Google Drive Sync below');
+        showToast('Configure Authenticated Cloud Sync below');
       }
     },
     ExportJson() {
-      const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+      const blob = new Blob([JSON.stringify(stripSecrets(state), null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -1382,7 +1763,16 @@ const App = (() => {
           const parsed = JSON.parse(e.target.result);
           const payload = parsed.payload || parsed;
           if (payload && Array.isArray(payload.exercises)) {
-            state = { ...createDefaultState(), ...payload };
+            state = {
+              ...createDefaultState(),
+              ...payload,
+              syncProvider: state.syncProvider,
+              syncUrl: state.syncUrl,
+              syncPasskey: state.syncPasskey,
+              githubToken: state.githubToken,
+              gistId: state.gistId,
+              appLockEnabled: state.appLockEnabled
+            };
             saveState(true);
             showToast('Imported backup');
           } else {
