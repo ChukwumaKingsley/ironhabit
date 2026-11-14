@@ -148,6 +148,7 @@ const App = (() => {
       version: 2,
       updatedAt: 0,
       profileName: 'Kingsley',
+      themeMode: 'dark', // 'dark' | 'light' | 'system'
       trackingStartDate: addDays(today, -28),
       weeklyGymTarget: 4,
       syncProvider: 'gdrive', // 'gdrive' (Passkey Google Drive) | 'gist' (Private GitHub Gist)
@@ -832,14 +833,42 @@ const App = (() => {
     }
   }
 
+  function applyThemeMode() {
+    const mode = state.themeMode || 'dark';
+    let resolved = mode;
+    if (mode === 'system') {
+      const prefersLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
+      resolved = prefersLight ? 'light' : 'dark';
+    }
+    document.documentElement.setAttribute('data-theme', resolved);
+    const metaTheme = document.querySelector('meta[name="theme-color"]');
+    if (metaTheme) {
+      metaTheme.setAttribute('content', resolved === 'light' ? '#FFFFFF' : '#0B0E14');
+    }
+  }
+
+  if (window.matchMedia) {
+    window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
+      if (state.themeMode === 'system') {
+        applyThemeMode();
+      }
+    });
+  }
+
   // --- Header Render ---
   function renderHeader() {
     const today = toDateKey();
     const dt = parseDateKey(today);
-    const moYr = dt.toLocaleDateString('en-US', { month: 'short', year: 'numeric' }).toUpperCase();
+    const fullDate = dt.toLocaleDateString('en-US', {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric'
+    }).toUpperCase();
     const wk = getISOWeekNumber(today);
-    document.getElementById('hdr-date-meta').textContent = `${moYr} • W${wk}`;
+    document.getElementById('hdr-date-meta').textContent = `${fullDate} • W${wk}`;
 
+    applyThemeMode();
     updateSyncHeader();
     updateLockHeader();
 
@@ -891,7 +920,7 @@ const App = (() => {
           &larr; Prev
         </button>
         <div style="display:flex;align-items:center;gap:8px;">
-          <span class="tabular-nums" style="font-size:0.75rem;font-weight:700;color:#fff;">${formatShortDate(dateKey)}</span>
+          <span class="tabular-nums" style="font-size:0.75rem;font-weight:700;color:var(--text-white);">${formatShortDate(dateKey)}</span>
           ${!isToday ? `<button class="jump-today-btn" onclick="App.JumpToToday()">Today</button>` : ''}
         </div>
         <button class="step-btn smooth-ui ${isToday ? 'disabled' : ''}" onclick="App.StepActiveDate(1)">
@@ -1023,7 +1052,7 @@ const App = (() => {
       <section class="surface-card card-pad">
         <div class="card-head">
           <div>
-            <div style="font-size:0.875rem;font-weight:700;color:#fff;">${monthTitle}</div>
+            <div style="font-size:0.875rem;font-weight:700;color:var(--text-white);">${monthTitle}</div>
             <div class="section-sub">Entries older than 7 days are locked (read-only)</div>
           </div>
           <div style="display:flex;align-items:center;gap:4px;">
@@ -1413,20 +1442,20 @@ const App = (() => {
             </linearGradient>
           </defs>
 
-          <line x1="${padL}" y1="${padT}" x2="${svgW - padR}" y2="${padT}" stroke="#1A2230" stroke-width="1" />
-          <line x1="${padL}" y1="${padT + plotH}" x2="${svgW - padR}" y2="${padT + plotH}" stroke="#1E293B" stroke-width="1" />
+          <line x1="${padL}" y1="${padT}" x2="${svgW - padR}" y2="${padT}" stroke="var(--border-inset)" stroke-width="1" />
+          <line x1="${padL}" y1="${padT + plotH}" x2="${svgW - padR}" y2="${padT + plotH}" stroke="var(--border-card)" stroke-width="1" />
 
           <text x="${padL - 5}" y="${padT + 4}" text-anchor="end" fill="#64748B" font-size="12" font-weight="600">${maxVal}</text>
-          <text x="${padL - 5}" y="${targetY + 4}" text-anchor="end" fill="#38BDF8" font-size="12" font-weight="700">${targetVal}</text>
+          <text x="${padL - 5}" y="${targetY + 4}" text-anchor="end" fill="var(--sky-400)" font-size="12" font-weight="700">${targetVal}</text>
           <text x="${padL - 5}" y="${padT + plotH + 4}" text-anchor="end" fill="#64748B" font-size="12" font-weight="600">0</text>
 
-          <line x1="${padL}" y1="${targetY}" x2="${svgW - padR}" y2="${targetY}" stroke="#38BDF8" stroke-width="1.4" stroke-dasharray="4 4" />
+          <line x1="${padL}" y1="${targetY}" x2="${svgW - padR}" y2="${targetY}" stroke="var(--sky-400)" stroke-width="1.4" stroke-dasharray="4 4" />
 
           <path d="${areaD}" fill="url(#splitArea)" />
-          <path d="${d}" fill="none" stroke="#CBD5E1" stroke-width="2" stroke-linecap="round" />
+          <path d="${d}" fill="none" stroke="var(--text-slate-300)" stroke-width="2" stroke-linecap="round" />
 
           ${pts.map(p => `
-            <circle cx="${p.x}" cy="${p.y}" r="${p.isCurrent ? 4.5 : 3.5}" fill="${p.hex}" stroke="#0D1119" stroke-width="1.8" />
+            <circle cx="${p.x}" cy="${p.y}" r="${p.isCurrent ? 4.5 : 3.5}" fill="${p.hex}" stroke="var(--bg-inset)" stroke-width="1.8" />
             <text x="${p.x}" y="${p.y - 8}" text-anchor="middle" fill="${p.hex}" font-size="12" font-weight="700">${p.v}</text>
             <text x="${p.x}" y="${svgH - 4}" text-anchor="middle" fill="${p.isCurrent ? '#F59E0B' : '#64748B'}" font-size="12" font-weight="600">${p.short}</text>
           `).join('')}
@@ -1576,6 +1605,18 @@ const App = (() => {
           <div class="surface-inset" style="padding:8px;text-align:center;">
             <div style="font-size:0.7rem;color:var(--text-slate-500);text-transform:uppercase;">Best Streak</div>
             <div class="tabular-nums text-emerald" style="font-size:0.95rem;font-weight:700;margin-top:2px;">${streaks.best}d</div>
+          </div>
+        </div>
+
+        <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border-card);display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+          <div>
+            <div style="font-size:0.75rem;font-weight:600;color:var(--text-slate-200);">Display Mode</div>
+            <div class="section-sub">Choose Dark, Light, or System Default</div>
+          </div>
+          <div class="segmented-pair" style="display:grid;grid-template-columns:repeat(3, 1fr);min-width:210px;">
+            <button class="seg-btn ${(state.themeMode || 'dark') === 'dark' ? 'active' : ''} smooth-ui" onclick="App.SetThemeMode('dark')">Dark</button>
+            <button class="seg-btn ${state.themeMode === 'light' ? 'active' : ''} smooth-ui" onclick="App.SetThemeMode('light')">Light</button>
+            <button class="seg-btn ${state.themeMode === 'system' ? 'active' : ''} smooth-ui" onclick="App.SetThemeMode('system')">System</button>
           </div>
         </div>
       </section>
@@ -1757,7 +1798,7 @@ const App = (() => {
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=5').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=6').then((reg) => {
         if (reg && reg.update) reg.update();
       }).catch(() => {});
     });
@@ -1912,6 +1953,12 @@ const App = (() => {
       state.profileName = name || 'Kingsley';
       saveState(true);
       showToast(`Profile updated: ${state.profileName}`);
+    },
+    SetThemeMode(mode) {
+      state.themeMode = ['dark', 'light', 'system'].includes(mode) ? mode : 'dark';
+      applyThemeMode();
+      saveState(true);
+      showToast(`Display mode: ${state.themeMode.toUpperCase()}`);
     },
     SetSyncProvider(provider) {
       state.syncProvider = provider === 'gdrive' ? 'gdrive' : 'gist';

@@ -42,6 +42,45 @@
   --sky-500: #0ea5e9;
 }
 
+html[data-theme="light"] {
+  --bg-deep: #e2e8f0;
+  --bg-base: #f1f5f9;
+  --bg-chrome: #ffffff;
+  --bg-card: #ffffff;
+  --bg-inset: #f8fafc;
+  --bg-active: #e2e8f0;
+
+  --border-card: #cbd5e1;
+  --border-inset: #cbd5e1;
+  --border-slate: #94a3b8;
+
+  --text-white: #0f172a;
+  --text-main: #0f172a;
+  --text-slate-200: #1e293b;
+  --text-slate-300: #334155;
+  --text-slate-400: #475569;
+  --text-slate-500: #64748b;
+  --text-slate-600: #94a3b8;
+
+  --emerald-300: #047857;
+  --emerald-400: #059669;
+  --emerald-500: #10b981;
+  --emerald-600: #10b981;
+
+  --amber-300: #b45309;
+  --amber-400: #d97706;
+  --amber-500: #f59e0b;
+
+  --red-300: #b91c1c;
+  --red-400: #dc2626;
+  --red-500: #ef4444;
+  --red-600: #ef4444;
+
+  --sky-300: #0369a1;
+  --sky-400: #0284c7;
+  --sky-500: #0ea5e9;
+}
+
 * {
   box-sizing: border-box;
   margin: 0;
@@ -135,21 +174,26 @@ input[type="number"] {
 
 .brand-row {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
 }
 
 .brand-name {
-  font-size: 0.875rem;
+  font-size: 0.9rem;
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--text-white);
+  line-height: 1.15;
 }
 
 .brand-meta {
-  font-size: 0.75rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
   color: var(--text-slate-500);
+  line-height: 1.2;
 }
 
 .sync-badge-btn {
@@ -1024,4 +1068,81 @@ input[type="number"] {
 
 .danger-btn:hover {
   background-color: var(--red-500);
+}
+
+/* Light Mode Surface Refinements */
+html[data-theme="light"] .app-shell {
+  border-left-color: var(--border-card);
+  border-right-color: var(--border-card);
+}
+
+html[data-theme="light"] .top-chrome,
+html[data-theme="light"] .card-head,
+html[data-theme="light"] .legend-footer,
+html[data-theme="light"] .bottom-nav-grid {
+  border-color: var(--border-card);
+}
+
+html[data-theme="light"] .sync-badge-btn,
+html[data-theme="light"] .inc-btn,
+html[data-theme="light"] .mini-btn,
+html[data-theme="light"] .segmented-pair,
+html[data-theme="light"] .period-4-grid {
+  border-color: var(--border-card);
+}
+
+html[data-theme="light"] .progress-rail {
+  background-color: #e2e8f0;
+}
+
+html[data-theme="light"] .inc-btn.target-btn {
+  background-color: #ecfdf5;
+  border-color: #6ee7b7;
+  color: #047857;
+}
+
+html[data-theme="light"] .gym-dot {
+  background-color: #cbd5e1;
+}
+
+html[data-theme="light"] .gym-action-btn {
+  background-color: var(--bg-inset);
+  border-color: var(--border-slate);
+  color: var(--text-slate-200);
+}
+
+html[data-theme="light"] .gym-action-btn.visited {
+  background-color: rgba(14, 165, 233, 0.14);
+  border-color: var(--sky-400);
+  color: var(--sky-300);
+}
+
+html[data-theme="light"] .cal-cell.green,
+html[data-theme="light"] .cal-cell.red,
+html[data-theme="light"] .gym-wk-box.green,
+html[data-theme="light"] .gym-wk-box.red,
+html[data-theme="light"] .primary-btn,
+html[data-theme="light"] .danger-btn {
+  color: #ffffff;
+}
+
+html[data-theme="light"] .seg-btn.active {
+  background-color: var(--bg-card);
+  color: var(--text-white);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
+html[data-theme="light"] .snapshot-tile.active {
+  background-color: #e2e8f0;
+  border-color: var(--border-slate);
+}
+
+html[data-theme="light"] .locked-tag {
+  background-color: #e2e8f0;
+  border-color: var(--border-slate);
+  color: var(--text-slate-300);
+}
+
+html[data-theme="light"] .auth-gate-overlay {
+  background-color: rgba(241, 245, 249, 0.94);
 }
