@@ -149,6 +149,11 @@ const App = (() => {
       updatedAt: 0,
       profileName: 'Kingsley',
       themeMode: 'dark', // 'dark' | 'light' | 'system'
+      remindersEnabled: false,
+      morningReminderTime: '08:00',
+      eveningReminderTime: '20:00',
+      lastMorningNotifDate: '',
+      lastEveningNotifDate: '',
       trackingStartDate: addDays(today, -28),
       weeklyGymTarget: 4,
       syncProvider: 'gdrive', // 'gdrive' (Passkey Google Drive) | 'gist' (Private GitHub Gist)
@@ -412,6 +417,122 @@ const App = (() => {
       }
     }
     return streak;
+  }
+
+  // --- Smart Morning & Evening Goal-Aware Notifications ---
+  function parseTimeMinutes(hhmm, fallbackMinutes) {
+    if (!hhmm || typeof hhmm !== 'string' || !hhmm.includes(':')) return fallbackMinutes;
+    const [h, m] = hhmm.split(':').map(Number);
+    if (Number.isNaN(h) || Number.isNaN(m)) return fallbackMinutes;
+    return h * 60 + m;
+  }
+
+  function buildGoalReminderPayload(slot, forceTest = false) {
+    const today = toDateKey();
+    const unmet = state.exercises.filter(ex => getExerciseVal(today, ex.id) < ex.target);
+    const curMon = getMondayKey(today);
+    const gymSum = getWeekGymSummary(curMon);
+    const visitedGymToday = Boolean(state.logs[today] && state.logs[today].gym);
+    const dowMon0 = (new Date().getDay() + 6) % 7; // 0=Mon..6=Sun
+    const daysRemainingInWeek = 7 - dowMon0;
+    const gymNeeded = Math.max(0, gymSum.target - gymSum.count);
+
+    const homeDone = unmet.length === 0;
+    const gymUrgent = !gymSum.met && !visitedGymToday && (slot === 'morning' || gymNeeded >= daysRemainingInWeek);
+
+    if (!forceTest && homeDone && !gymUrgent) {
+      return null; // All goals met — stay silent
+    }
+
+    if (homeDone && gymSum.met) {
+      return {
+        title: 'IRONHABIT — All Goals Met',
+        body: `All ${state.exercises.length} daily home targets complete • Weekly Gym target met (${gymSum.count}/${gymSum.target}d).`
+      };
+    }
+
+    const unmetSummary = unmet
+      .map(ex => `${ex.name} ${getExerciseVal(today, ex.id)}/${ex.target}`)
+      .join(', ');
+
+    if (slot === 'morning') {
+      const title = 'IRONHABIT — Morning Target Check-In';
+      const homePart = homeDone
+        ? 'Daily home targets complete'
+        : `${unmet.length}/${state.exercises.length} daily targets pending (${unmetSummary})`;
+      const gymPart = gymSum.met
+        ? `Gym goal met (${gymSum.count}/${gymSum.target}d)`
+        : `Weekly Gym: ${gymSum.count}/${gymSum.target}d (${gymNeeded} left this week)`;
+      return { title, body: `${homePart} • ${gymPart}` };
+    }
+
+    const streaks = computeHomeStreaks();
+    const title = 'IRONHABIT — Evening Accountability Alert';
+    const homePart = homeDone
+      ? 'Daily home targets complete'
+      : `${unmet.length} target(s) unfinished (${unmetSummary})${streaks.current > 0 ? ` — protect your ${streaks.current}d streak!` : ''}`;
+    const gymPart = gymSum.met
+      ? `Gym met (${gymSum.count}/${gymSum.target}d)`
+      : `Gym: ${gymSum.count}/${gymSum.target}d`;
+    return { title, body: `${homePart} • ${gymPart}` };
+  }
+
+  async function dispatchBrowserNotification(title, body) {
+    showToast(body);
+    if (!('Notification' in window)) return;
+    if (Notification.permission !== 'granted') return;
+
+    try {
+      if ('serviceWorker' in navigator) {
+        const reg = await navigator.serviceWorker.getRegistration();
+        if (reg && reg.showNotification) {
+          await reg.showNotification(title, {
+            body,
+            icon: './icon.svg',
+            badge: './icon.svg',
+            tag: 'ironhabit-goal-reminder',
+            renotify: true
+          });
+          return;
+        }
+      }
+      new Notification(title, { body, icon: './icon.svg' });
+    } catch (_) {}
+  }
+
+  function checkScheduledReminders() {
+    if (!state.remindersEnabled) return;
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+
+    const now = new Date();
+    const today = toDateKey(now);
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    const morningMins = parseTimeMinutes(state.morningReminderTime || '08:00', 8 * 60);
+    const eveningMins = parseTimeMinutes(state.eveningReminderTime || '20:00', 20 * 60);
+
+    // Morning window: between morningReminderTime and eveningReminderTime (and before 2:00 PM)
+    if (
+      nowMinutes >= morningMins &&
+      nowMinutes < Math.min(eveningMins, 14 * 60) &&
+      state.lastMorningNotifDate !== today
+    ) {
+      state.lastMorningNotifDate = today;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      const payload = buildGoalReminderPayload('morning', false);
+      if (payload) {
+        dispatchBrowserNotification(payload.title, payload.body);
+      }
+    }
+
+    // Evening window: at or after eveningReminderTime
+    if (nowMinutes >= eveningMins && state.lastEveningNotifDate !== today) {
+      state.lastEveningNotifDate = today;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      const payload = buildGoalReminderPayload('evening', false);
+      if (payload) {
+        dispatchBrowserNotification(payload.title, payload.body);
+      }
+    }
   }
 
   // --- Toast Helper ---
@@ -1621,6 +1742,41 @@ const App = (() => {
         </div>
       </section>
 
+      <!-- 0B. Morning & Evening Goal Reminders -->
+      <section class="surface-card card-pad">
+        <div class="card-head">
+          <div>
+            <div class="section-heading">Morning &amp; Evening Goal Reminders</div>
+            <div class="section-sub">Alerts you only when daily home targets or weekly gym goals are not yet met</div>
+          </div>
+          <button class="step-btn smooth-ui"
+                  style="${state.remindersEnabled ? 'border-color:var(--emerald-500);color:var(--emerald-400);' : ''}"
+                  onclick="App.ToggleReminders()">
+            ${state.remindersEnabled ? 'Reminders: ON' : 'Enable Reminders'}
+          </button>
+        </div>
+
+        <div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:8px;margin-bottom:8px;">
+          <div class="surface-inset" style="padding:8px;">
+            <div style="font-size:0.7rem;color:var(--text-slate-400);text-transform:uppercase;margin-bottom:4px;">Morning Check-In</div>
+            <input id="rem-morning-input" type="time" class="text-input tabular-nums" style="width:100%;font-weight:700;"
+                   value="${escapeHtml(state.morningReminderTime || '08:00')}"
+                   onchange="App.SaveReminderSchedule()" />
+          </div>
+          <div class="surface-inset" style="padding:8px;">
+            <div style="font-size:0.7rem;color:var(--text-slate-400);text-transform:uppercase;margin-bottom:4px;">Evening Accountability</div>
+            <input id="rem-evening-input" type="time" class="text-input tabular-nums" style="width:100%;font-weight:700;"
+                   value="${escapeHtml(state.eveningReminderTime || '20:00')}"
+                   onchange="App.SaveReminderSchedule()" />
+          </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:6px;">
+          <button class="step-btn smooth-ui" onclick="App.SaveReminderSchedule()">Save Schedule</button>
+          <button class="step-btn smooth-ui" style="color:var(--sky-400);" onclick="App.TestReminderNow()">Test Alert Now</button>
+        </div>
+      </section>
+
       <!-- 1. App Passkey Lock & Session Authentication -->
       <section class="surface-card card-pad">
         <div class="card-head">
@@ -1798,7 +1954,7 @@ const App = (() => {
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=6').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=7').then((reg) => {
         if (reg && reg.update) reg.update();
       }).catch(() => {});
     });
@@ -1806,6 +1962,7 @@ const App = (() => {
 
   window.addEventListener('DOMContentLoaded', () => {
     render();
+    checkScheduledReminders();
     if (isCloudConfigured(state)) {
       pullFromCloud({ silent: true, onlyIfNewer: true });
     }
@@ -1813,18 +1970,23 @@ const App = (() => {
 
   // Automatically sync across PC & Phone whenever tab/app gains focus or every 10s
   window.addEventListener('focus', () => {
+    checkScheduledReminders();
     if (isCloudConfigured(state)) {
       pullFromCloud({ silent: true, onlyIfNewer: true });
     }
   });
 
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && isCloudConfigured(state)) {
-      pullFromCloud({ silent: true, onlyIfNewer: true });
+    if (document.visibilityState === 'visible') {
+      checkScheduledReminders();
+      if (isCloudConfigured(state)) {
+        pullFromCloud({ silent: true, onlyIfNewer: true });
+      }
     }
   });
 
   setInterval(() => {
+    checkScheduledReminders();
     if (document.visibilityState === 'visible' && isCloudConfigured(state)) {
       pullFromCloud({ silent: true, onlyIfNewer: true });
     }
@@ -1959,6 +2121,50 @@ const App = (() => {
       applyThemeMode();
       saveState(true);
       showToast(`Display mode: ${state.themeMode.toUpperCase()}`);
+    },
+    async ToggleReminders() {
+      if (!state.remindersEnabled) {
+        if (!('Notification' in window)) {
+          showToast('Browser notifications are not supported on this device');
+          return;
+        }
+        let perm = Notification.permission;
+        if (perm !== 'granted') {
+          perm = await Notification.requestPermission();
+        }
+        if (perm !== 'granted') {
+          showToast('Allow browser notification permission to enable reminders');
+          return;
+        }
+        state.remindersEnabled = true;
+        saveState(true);
+        showToast(`Smart Reminders ON (${state.morningReminderTime || '08:00'} & ${state.eveningReminderTime || '20:00'})`);
+        checkScheduledReminders();
+      } else {
+        state.remindersEnabled = false;
+        saveState(true);
+        showToast('Smart Reminders turned OFF');
+      }
+    },
+    SaveReminderSchedule() {
+      const mEl = document.getElementById('rem-morning-input');
+      const eEl = document.getElementById('rem-evening-input');
+      if (mEl && mEl.value) state.morningReminderTime = mEl.value;
+      if (eEl && eEl.value) state.eveningReminderTime = eEl.value;
+      saveState(true);
+      showToast(`Schedule saved: ${state.morningReminderTime} & ${state.eveningReminderTime}`);
+      checkScheduledReminders();
+    },
+    async TestReminderNow() {
+      if ('Notification' in window && Notification.permission !== 'granted') {
+        await Notification.requestPermission();
+      }
+      const hour = new Date().getHours();
+      const slot = hour < 14 ? 'morning' : 'evening';
+      const payload = buildGoalReminderPayload(slot, true);
+      if (payload) {
+        await dispatchBrowserNotification(payload.title, payload.body);
+      }
     },
     SetSyncProvider(provider) {
       state.syncProvider = provider === 'gdrive' ? 'gdrive' : 'gist';
