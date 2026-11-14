@@ -858,11 +858,22 @@ input[type="number"] {
 .nav-tab-btn {
   padding: 6px 4px;
   border-radius: 2px;
-  font-size: 0.75rem;
+  font-size: 0.72rem;
   font-weight: 600;
   color: var(--text-slate-400);
   text-align: center;
   border: 1px solid transparent;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+}
+
+.nav-tab-icon {
+  width: 15px;
+  height: 15px;
+  display: block;
 }
 
 .nav-tab-btn:hover {
@@ -873,6 +884,60 @@ input[type="number"] {
   background-color: var(--bg-active);
   color: var(--text-white);
   border-color: var(--border-slate);
+}
+
+.nav-tab-btn.active .nav-tab-icon {
+  color: var(--emerald-400);
+}
+
+.icon-hdr-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 7px;
+  border-radius: 2px;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-slate);
+  color: var(--text-slate-400);
+}
+
+.icon-hdr-btn:hover {
+  color: var(--text-white);
+}
+
+.icon-hdr-btn.secured {
+  color: var(--emerald-400);
+  border-color: rgba(16, 185, 129, 0.45);
+}
+
+.profile-hdr-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border-radius: 2px;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-slate);
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-slate-300);
+}
+
+.profile-hdr-btn:hover {
+  color: var(--text-white);
+}
+
+.profile-hdr-btn.active {
+  background-color: var(--bg-active);
+  color: var(--text-white);
+  border-color: var(--sky-400);
+}
+
+.profile-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin-top: 10px;
 }
 
 /* Toast */
@@ -933,4 +998,30 @@ input[type="number"] {
   color: var(--text-slate-400);
   line-height: 1.45;
   margin-bottom: 10px;
+}
+
+.danger-zone-card {
+  border-color: rgba(239, 68, 68, 0.35);
+}
+
+.danger-confirm-box {
+  background-color: rgba(220, 38, 38, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.45);
+  border-radius: 2px;
+  padding: 10px;
+  margin-top: 10px;
+}
+
+.danger-btn {
+  padding: 6px 12px;
+  border-radius: 2px;
+  background-color: var(--red-600);
+  border: 1px solid var(--red-500);
+  color: var(--text-white);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.danger-btn:hover {
+  background-color: var(--red-500);
 }

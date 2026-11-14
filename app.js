@@ -147,6 +147,7 @@ const App = (() => {
     return {
       version: 2,
       updatedAt: 0,
+      profileName: 'Kingsley',
       trackingStartDate: addDays(today, -28),
       weeklyGymTarget: 4,
       syncProvider: 'gdrive', // 'gdrive' (Passkey Google Drive) | 'gist' (Private GitHub Gist)
@@ -237,6 +238,7 @@ const App = (() => {
     chartPeriod: 'daily', // 'daily' | 'weekly' | 'monthly' | 'all'
     chartStyle: 'area',  // 'area' (default) | 'bar'
     syncStatus: isCloudConfigured(state) ? 'synced' : 'local',
+    showResetConfirm: false,
     deferredInstallPrompt: null
   };
 
@@ -445,15 +447,19 @@ const App = (() => {
   }
 
   function updateLockHeader() {
-    const dot = document.getElementById('hdr-lock-dot');
-    const lbl = document.getElementById('hdr-lock-label');
-    if (!dot || !lbl) return;
-    dot.className = 'dot-indicator';
-    if (state.syncPasskey && state.syncPasskey.trim()) {
-      dot.classList.add('synced');
-      lbl.textContent = 'Lock App';
-    } else {
-      lbl.textContent = 'Set Passkey';
+    const lockBtn = document.getElementById('hdr-lock-btn');
+    if (lockBtn) {
+      const hasPass = Boolean(state.syncPasskey && state.syncPasskey.trim());
+      lockBtn.className = `icon-hdr-btn smooth-ui ${hasPass ? 'secured' : ''}`;
+      lockBtn.title = hasPass ? 'Lock App Now' : 'Set App Passkey in Profile & Settings';
+    }
+    const profBtn = document.getElementById('hdr-profile-btn');
+    const profLbl = document.getElementById('hdr-profile-label');
+    if (profBtn) {
+      profBtn.className = `profile-hdr-btn smooth-ui ${ui.screen === 'settings' ? 'active' : ''}`;
+    }
+    if (profLbl) {
+      profLbl.textContent = (state.profileName && state.profileName.trim()) ? state.profileName.trim() : 'Profile';
     }
   }
 
@@ -1464,11 +1470,8 @@ const App = (() => {
     `;
   }
 
-  // --- SCREEN 4: GOALS, TARGETS, APP PASSKEY LOCK & AUTHENTICATED CLOUD SYNC ---
-  function renderSettingsScreen() {
-    const cloudReady = isCloudConfigured(state);
-    const hasPasskey = Boolean(state.syncPasskey && state.syncPasskey.trim());
-
+  // --- SCREEN 4: GOALS (STRICTLY FITNESS TARGETS) ---
+  function renderGoalsScreen() {
     return `
       <!-- 1. Daily Home Exercise Targets -->
       <section class="surface-card card-pad">
@@ -1531,8 +1534,53 @@ const App = (() => {
           `).join('')}
         </div>
       </section>
+    `;
+  }
 
-      <!-- 3. App Passkey Lock & Session Authentication -->
+  // --- SCREEN 5: PROFILE & SETTINGS (OPENED FROM TOP-RIGHT HEADER) ---
+  function renderSettingsScreen() {
+    const cloudReady = isCloudConfigured(state);
+    const hasPasskey = Boolean(state.syncPasskey && state.syncPasskey.trim());
+    const logKeys = Object.keys(state.logs || {});
+    const totalDaysLogged = logKeys.length;
+    const totalGymVisits = logKeys.filter(k => state.logs[k] && state.logs[k].gym).length;
+    const streaks = computeHomeStreaks();
+
+    return `
+      <!-- 0. Athlete Profile & Lifetime Overview -->
+      <section class="surface-card card-pad">
+        <div class="card-head">
+          <div>
+            <div class="section-heading">Athlete Profile &amp; Account</div>
+            <div class="section-sub tabular-nums">Tracking since ${formatMonthDayYear(state.trackingStartDate || toDateKey())}</div>
+          </div>
+          <button class="step-btn smooth-ui" onclick="App.SetScreen('today')">&larr; Back to Today</button>
+        </div>
+
+        <div style="display:flex;flex-wrap:wrap;gap:6px;">
+          <input id="profile-name-input" type="text" class="text-input" style="flex:1;min-width:160px;"
+                 placeholder="Display Name / Handle"
+                 value="${escapeHtml(state.profileName || 'Kingsley')}" />
+          <button class="primary-btn smooth-ui" onclick="App.SaveProfileName()">Update Profile</button>
+        </div>
+
+        <div class="profile-stat-grid">
+          <div class="surface-inset" style="padding:8px;text-align:center;">
+            <div style="font-size:0.7rem;color:var(--text-slate-500);text-transform:uppercase;">Days Logged</div>
+            <div class="tabular-nums text-white" style="font-size:0.95rem;font-weight:700;margin-top:2px;">${totalDaysLogged}</div>
+          </div>
+          <div class="surface-inset" style="padding:8px;text-align:center;">
+            <div style="font-size:0.7rem;color:var(--text-slate-500);text-transform:uppercase;">Gym Visits</div>
+            <div class="tabular-nums text-sky" style="font-size:0.95rem;font-weight:700;margin-top:2px;">${totalGymVisits}</div>
+          </div>
+          <div class="surface-inset" style="padding:8px;text-align:center;">
+            <div style="font-size:0.7rem;color:var(--text-slate-500);text-transform:uppercase;">Best Streak</div>
+            <div class="tabular-nums text-emerald" style="font-size:0.95rem;font-weight:700;margin-top:2px;">${streaks.best}d</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 1. App Passkey Lock & Session Authentication -->
       <section class="surface-card card-pad">
         <div class="card-head">
           <div>
@@ -1548,7 +1596,7 @@ const App = (() => {
           Static GitHub Pages only serves the UI shell — visitors with the public link only see their own isolated browser storage and <strong>cannot</strong> access or overwrite your data without your secret Passkey or GitHub Token below.
         </div>
 
-        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;">
+        <div style="display:flex;flex-wrap:wrap;gap:6px;">
           <input id="sec-passkey-input" type="password" class="text-input" style="flex:1;min-width:160px;"
                  placeholder="Set Secret Passkey / PIN"
                  value="${escapeHtml(state.syncPasskey || '')}" />
@@ -1561,7 +1609,7 @@ const App = (() => {
         </div>
       </section>
 
-      <!-- 4. Authenticated Cloud Sync & Backups -->
+      <!-- 2. Authenticated Cloud Sync -->
       <section class="surface-card card-pad">
         <div class="card-head">
           <div>
@@ -1600,7 +1648,7 @@ const App = (() => {
           </div>
         ` : `
           <div class="security-note-box">
-            <strong>Why Google asks for "Anyone" + How Passkey locks it down:</strong> Google blocks cross-domain <code>fetch()</code> from <code>github.io</code> unless the Web App gateway is set to <em>Anyone</em>. To secure it, our script enforces <code>SECRET_PASSKEY</code> verification on every <code>GET</code> &amp; <code>POST</code> — any request without your passkey is rejected.
+            <strong>Passkey-Verified Google Drive Sync:</strong> Every <code>GET</code> &amp; <code>POST</code> request is verified against your <code>SECRET_PASSKEY</code> inside your Apps Script — unauthenticated requests are rejected.
           </div>
           <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;">
             <input id="sync-url-input" type="url" class="text-input" style="flex:1;min-width:200px;"
@@ -1610,20 +1658,66 @@ const App = (() => {
           </div>
         `}
 
-        <div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:6px;margin-bottom:8px;">
+        <div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:6px;">
           <button class="step-btn" onclick="App.PushDriveManual()">Sync Now</button>
           <button class="step-btn" onclick="App.PullDriveManual()">Pull Cloud</button>
           <button class="step-btn" onclick="App.CopyDriveScript()">Copy Protected Script</button>
         </div>
+      </section>
 
-        <div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:6px;">
-          <button class="step-btn" onclick="App.ExportJson()">Export JSON</button>
+      <!-- 3. Local JSON Backups -->
+      <section class="surface-card card-pad">
+        <div class="card-head">
+          <div>
+            <div class="section-heading">Manual JSON Backup &amp; Restore</div>
+            <div class="section-sub">Download a snapshot of your logs or restore from a JSON file</div>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:6px;">
+          <button class="step-btn" onclick="App.ExportJson()">Export JSON Backup</button>
           <label class="step-btn" style="text-align:center;cursor:pointer;">
-            Import JSON
+            Import JSON Backup
             <input type="file" accept=".json" style="display:none;" onchange="App.ImportJson(event)" />
           </label>
-          <button class="step-btn" style="color:var(--red-400);" onclick="App.ResetClean()">Reset Day 1</button>
         </div>
+      </section>
+
+      <!-- 4. Danger Zone — Protected Data Reset -->
+      <section class="surface-card card-pad danger-zone-card">
+        <div class="card-head" style="margin-bottom:4px;">
+          <div>
+            <div class="section-heading" style="color:var(--red-400);">Danger Zone — Wipe All Entries</div>
+            <div class="section-sub tabular-nums">Permanently deletes all ${totalDaysLogged} logged days and restarts from Today</div>
+          </div>
+          ${!ui.showResetConfirm ? `
+            <button class="step-btn smooth-ui" style="color:var(--red-400);border-color:rgba(239,68,68,0.4);" onclick="App.OpenResetConfirm()">
+              Unlock Reset...
+            </button>
+          ` : `
+            <button class="step-btn smooth-ui" onclick="App.CancelResetConfirm()">
+              Cancel
+            </button>
+          `}
+        </div>
+
+        ${ui.showResetConfirm ? `
+          <div class="danger-confirm-box">
+            <div style="font-size:0.75rem;color:var(--text-slate-200);font-weight:600;margin-bottom:8px;">
+              Security Verification Required: Type <code class="text-red">RESET</code> ${hasPasskey ? 'and enter your Secret Passkey' : ''} to permanently wipe all entries.
+            </div>
+            <div style="display:flex;flex-wrap:wrap;gap:6px;">
+              <input id="reset-confirm-word" type="text" class="text-input" style="flex:1;min-width:130px;"
+                     placeholder="Type RESET in all caps" />
+              ${hasPasskey ? `
+                <input id="reset-confirm-passkey" type="password" class="text-input" style="flex:1;min-width:130px;"
+                       placeholder="Enter Secret Passkey" />
+              ` : ''}
+              <button class="danger-btn smooth-ui" onclick="App.ConfirmWipeAllData()">
+                Confirm Permanent Wipe
+              </button>
+            </div>
+          </div>
+        ` : ''}
       </section>
     `;
   }
@@ -1645,9 +1739,10 @@ const App = (() => {
     if (ui.screen === 'today') main.innerHTML = renderTodayScreen();
     else if (ui.screen === 'calendar') main.innerHTML = renderCalendarScreen();
     else if (ui.screen === 'charts') main.innerHTML = renderChartsScreen();
+    else if (ui.screen === 'goals') main.innerHTML = renderGoalsScreen();
     else main.innerHTML = renderSettingsScreen();
 
-    ['today', 'calendar', 'charts', 'settings'].forEach(s => {
+    ['today', 'calendar', 'charts', 'goals'].forEach(s => {
       const btn = document.getElementById('dock-' + s);
       if (btn) {
         btn.className = `nav-tab-btn smooth-ui ${ui.screen === s ? 'active' : ''}`;
@@ -1662,7 +1757,7 @@ const App = (() => {
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=4').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=5').then((reg) => {
         if (reg && reg.update) reg.update();
       }).catch(() => {});
     });
@@ -1697,6 +1792,7 @@ const App = (() => {
   return {
     SetScreen(scr) {
       ui.screen = scr;
+      ui.showResetConfirm = false;
       render();
     },
     StepActiveDate(delta) {
@@ -1809,6 +1905,13 @@ const App = (() => {
       state.weeklyGymTarget = Number(n) || 4;
       saveState(true);
       showToast(`Weekly gym target set to ${state.weeklyGymTarget}d/wk`);
+    },
+    SaveProfileName() {
+      const el = document.getElementById('profile-name-input');
+      const name = (el ? el.value : '').trim();
+      state.profileName = name || 'Kingsley';
+      saveState(true);
+      showToast(`Profile updated: ${state.profileName}`);
     },
     SetSyncProvider(provider) {
       state.syncProvider = provider === 'gdrive' ? 'gdrive' : 'gist';
@@ -1959,14 +2062,37 @@ const App = (() => {
       };
       reader.readAsText(file);
     },
-    ResetClean() {
+    OpenResetConfirm() {
+      ui.showResetConfirm = true;
+      render();
+    },
+    CancelResetConfirm() {
+      ui.showResetConfirm = false;
+      render();
+    },
+    ConfirmWipeAllData() {
+      const wordEl = document.getElementById('reset-confirm-word');
+      const typedWord = wordEl ? wordEl.value.trim() : '';
+      if (typedWord !== 'RESET') {
+        showToast('Type RESET in all caps to confirm');
+        return;
+      }
+      if (state.syncPasskey && state.syncPasskey.trim()) {
+        const passEl = document.getElementById('reset-confirm-passkey');
+        const typedPass = passEl ? passEl.value.trim() : '';
+        if (typedPass !== state.syncPasskey.trim()) {
+          showToast('Incorrect Secret Passkey — wipe aborted');
+          return;
+        }
+      }
       const today = toDateKey();
       state.logs = {};
       state.trackingStartDate = today;
       ui.activeDate = today;
       ui.selectedCalDate = today;
+      ui.showResetConfirm = false;
       saveState(true);
-      showToast('Cleared sample history — Day 1 starts today');
+      showToast('All entries wiped — Day 1 starts today');
     }
   };
 })();
