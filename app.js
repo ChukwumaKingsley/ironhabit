@@ -146,10 +146,10 @@ const App = (() => {
     const today = toDateKey();
     return {
       version: 2,
-      updatedAt: Date.now(),
+      updatedAt: 0,
       trackingStartDate: addDays(today, -28),
       weeklyGymTarget: 4,
-      syncProvider: 'gist', // 'gist' (Private GitHub Gist) | 'gdrive' (Passkey Google Drive)
+      syncProvider: 'gdrive', // 'gdrive' (Passkey Google Drive) | 'gist' (Private GitHub Gist)
       syncUrl: '',
       syncPasskey: '',
       githubToken: '',
@@ -220,6 +220,7 @@ const App = (() => {
   }
 
   let state = loadState();
+  let hasUnsyncedLocalChanges = false;
   let isSessionLocked = Boolean(
     state.appLockEnabled &&
     state.syncPasskey &&
@@ -247,7 +248,11 @@ const App = (() => {
       if (raw) {
         const parsed = JSON.parse(raw);
         if (parsed && Array.isArray(parsed.exercises)) {
-          return { ...createDefaultState(), ...parsed };
+          const merged = { ...createDefaultState(), ...parsed };
+          if (merged.syncUrl && !merged.githubToken) {
+            merged.syncProvider = 'gdrive';
+          }
+          return merged;
         }
       }
     } catch (e) {
@@ -260,7 +265,10 @@ const App = (() => {
   }
 
   function saveState(syncCloud = true) {
-    state.updatedAt = Date.now();
+    if (syncCloud) {
+      state.updatedAt = Date.now();
+      hasUnsyncedLocalChanges = true;
+    }
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     } catch (e) {
@@ -273,8 +281,9 @@ const App = (() => {
       updateSyncHeader();
       if (syncTimer) clearTimeout(syncTimer);
       syncTimer = setTimeout(() => {
+        syncTimer = null;
         pushToCloud(false);
-      }, 1000);
+      }, 350);
     }
   }
 
@@ -522,7 +531,13 @@ const App = (() => {
     }
   }
 
+  let isSyncInFlight = false;
+
   async function pushToCloud(manual = false) {
+    if (syncTimer) {
+      clearTimeout(syncTimer);
+      syncTimer = null;
+    }
     captureSettingsInputsIntoState();
     if (!isCloudConfigured(state)) {
       if (manual) {
@@ -535,9 +550,13 @@ const App = (() => {
       return;
     }
 
+    isSyncInFlight = true;
     ui.syncStatus = 'syncing';
     updateSyncHeader();
 
+    if (!state.updatedAt) {
+      state.updatedAt = Date.now();
+    }
     const envelope = {
       version: 2,
       updatedAt: state.updatedAt,
@@ -559,6 +578,7 @@ const App = (() => {
 
         const res = await fetch(url, {
           method,
+          cache: 'no-store',
           headers: {
             'Accept': 'application/vnd.github+json',
             'Authorization': `Bearer ${token}`,
@@ -580,6 +600,7 @@ const App = (() => {
         if (data && data.id) {
           state.gistId = data.id;
         }
+        hasUnsyncedLocalChanges = false;
         state.lastSyncedAt = Date.now();
         localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
         ui.syncStatus = 'synced';
@@ -592,6 +613,8 @@ const App = (() => {
         ui.syncStatus = 'error';
         updateSyncHeader();
         if (manual) showToast('GitHub Gist auth failed — check token (gist scope)');
+      } finally {
+        isSyncInFlight = false;
       }
       return;
     }
@@ -599,23 +622,32 @@ const App = (() => {
     // Google Drive Passkey-Authenticated Sync
     try {
       const sep = state.syncUrl.includes('?') ? '&' : '?';
-      const authUrl = `${state.syncUrl}${sep}key=${encodeURIComponent(state.syncPasskey || '')}`;
+      const authUrl = `${state.syncUrl}${sep}key=${encodeURIComponent(state.syncPasskey || '')}&_t=${Date.now()}`;
       const body = JSON.stringify({
         passkey: state.syncPasskey,
         ...envelope
       });
       const res = await fetch(authUrl, {
         method: 'POST',
+        cache: 'no-store',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body
       });
-      const data = await res.json().catch(() => ({ ok: true }));
-      if (data && data.ok === false) {
+      const rawText = await res.text();
+      let data = null;
+      try {
+        data = JSON.parse(rawText);
+      } catch (_) {}
+
+      if (!res.ok || !data || data.ok !== true) {
         ui.syncStatus = 'error';
         updateSyncHeader();
-        if (manual) showToast(data.error || 'Unauthorized Drive Passkey');
+        if (manual) {
+          showToast((data && data.error) || 'Drive write failed — re-deploy New Version in Apps Script');
+        }
         return;
       }
+      hasUnsyncedLocalChanges = false;
       state.lastSyncedAt = Date.now();
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
       ui.syncStatus = 'synced';
@@ -628,19 +660,38 @@ const App = (() => {
       ui.syncStatus = 'error';
       updateSyncHeader();
       if (manual) showToast('Could not reach Google Drive URL');
+    } finally {
+      isSyncInFlight = false;
     }
   }
 
-  async function pullFromCloud() {
-    captureSettingsInputsIntoState();
+  async function pullFromCloud(opts = {}) {
+    const { silent = false, onlyIfNewer = false, pushIfEmpty = false } = opts;
+
+    if (!silent) {
+      captureSettingsInputsIntoState();
+    }
     if (!isCloudConfigured(state)) {
-      showToast(state.syncProvider === 'gdrive'
-        ? 'Enter both your Passkey and Google Drive Script URL first'
-        : 'Enter your GitHub Personal Access Token first');
+      if (!silent) {
+        showToast(state.syncProvider === 'gdrive'
+          ? 'Enter both your Passkey and Google Drive Script URL first'
+          : 'Enter your GitHub Personal Access Token first');
+      }
       return;
     }
-    ui.syncStatus = 'syncing';
-    updateSyncHeader();
+
+    // If a local edit is currently waiting to push, flush it first so we never overwrite our own edit
+    if (syncTimer || hasUnsyncedLocalChanges) {
+      await pushToCloud(false);
+      if (onlyIfNewer) return;
+    }
+    if (isSyncInFlight) return;
+
+    isSyncInFlight = true;
+    if (!silent) {
+      ui.syncStatus = 'syncing';
+      updateSyncHeader();
+    }
 
     const preservedAuth = {
       syncProvider: state.syncProvider,
@@ -659,12 +710,18 @@ const App = (() => {
           gistId = await findExistingGistId(token);
         }
         if (!gistId) {
+          isSyncInFlight = false;
+          if (pushIfEmpty) {
+            await pushToCloud(true);
+            return;
+          }
           ui.syncStatus = 'synced';
           updateSyncHeader();
-          showToast('No private Gist found yet — click Sync Now to create one');
+          if (!silent) showToast('No private Gist found yet — click Sync Now to create one');
           return;
         }
-        const res = await fetch(`https://api.github.com/gists/${gistId}`, {
+        const res = await fetch(`https://api.github.com/gists/${gistId}?_t=${Date.now()}`, {
+          cache: 'no-store',
           headers: {
             'Accept': 'application/vnd.github+json',
             'Authorization': `Bearer ${token}`
@@ -674,57 +731,98 @@ const App = (() => {
         const gist = await res.json();
         const fileObj = gist.files && gist.files['fitness-tracker-data.json'];
         if (!fileObj || !fileObj.content) {
+          isSyncInFlight = false;
+          if (pushIfEmpty) {
+            await pushToCloud(true);
+            return;
+          }
           ui.syncStatus = 'synced';
           updateSyncHeader();
-          showToast('Gist is empty — click Sync Now to push first');
+          if (!silent) showToast('Gist is empty — click Sync Now to push first');
           return;
         }
         const parsed = JSON.parse(fileObj.content);
         const payload = parsed.payload || parsed;
+        const remoteUpdatedAt = Number(parsed.updatedAt || (payload && payload.updatedAt) || 0);
         if (payload && Array.isArray(payload.exercises)) {
-          state = { ...createDefaultState(), ...payload, ...preservedAuth, gistId, lastSyncedAt: Date.now() };
+          if (onlyIfNewer && remoteUpdatedAt <= Number(state.updatedAt || 0)) {
+            ui.syncStatus = 'synced';
+            updateSyncHeader();
+            return;
+          }
+          state = {
+            ...createDefaultState(),
+            ...payload,
+            ...preservedAuth,
+            gistId,
+            updatedAt: remoteUpdatedAt || Date.now(),
+            lastSyncedAt: Date.now()
+          };
+          hasUnsyncedLocalChanges = false;
           localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
           ui.syncStatus = 'synced';
           updateSyncHeader();
           render();
-          showToast('Restored from Private GitHub Gist');
+          if (!silent) showToast('Restored latest data from Private GitHub Gist');
         }
       } catch (e) {
         ui.syncStatus = 'error';
         updateSyncHeader();
-        showToast('Failed to pull from Private GitHub Gist');
+        if (!silent) showToast('Failed to pull from Private GitHub Gist');
+      } finally {
+        isSyncInFlight = false;
       }
       return;
     }
 
-    // Google Drive Passkey-Authenticated Pull
+    // Google Drive Passkey-Authenticated Pull (Cache-Busted)
     try {
       const sep = state.syncUrl.includes('?') ? '&' : '?';
-      const authUrl = `${state.syncUrl}${sep}key=${encodeURIComponent(state.syncPasskey || '')}`;
-      const res = await fetch(authUrl, { method: 'GET' });
+      const authUrl = `${state.syncUrl}${sep}key=${encodeURIComponent(state.syncPasskey || '')}&_t=${Date.now()}`;
+      const res = await fetch(authUrl, { method: 'GET', cache: 'no-store' });
       const data = await res.json();
       if (data && data.ok === false) {
         ui.syncStatus = 'error';
         updateSyncHeader();
-        showToast(data.error || 'Unauthorized: invalid passkey');
+        if (!silent) showToast(data.error || 'Unauthorized: invalid passkey');
         return;
       }
+      const remoteUpdatedAt = Number((data && data.updatedAt) || (data && data.payload && data.payload.updatedAt) || 0);
       if (data && data.payload && Array.isArray(data.payload.exercises)) {
-        state = { ...createDefaultState(), ...data.payload, ...preservedAuth, lastSyncedAt: Date.now() };
+        if (onlyIfNewer && remoteUpdatedAt <= Number(state.updatedAt || 0)) {
+          ui.syncStatus = 'synced';
+          updateSyncHeader();
+          return;
+        }
+        state = {
+          ...createDefaultState(),
+          ...data.payload,
+          ...preservedAuth,
+          updatedAt: remoteUpdatedAt || Date.now(),
+          lastSyncedAt: Date.now()
+        };
+        hasUnsyncedLocalChanges = false;
         localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
         ui.syncStatus = 'synced';
         updateSyncHeader();
         render();
-        showToast('Authenticated & restored from Google Drive');
+        if (!silent) showToast('Synced latest data from Google Drive');
       } else {
+        isSyncInFlight = false;
+        if (pushIfEmpty) {
+          await pushToCloud(true);
+          return;
+        }
         ui.syncStatus = 'synced';
         updateSyncHeader();
-        showToast('Drive file is empty — click Sync Now to push first');
+        if (!silent) showToast('Drive file is empty — click Sync Now to push first');
       }
     } catch (e) {
       ui.syncStatus = 'error';
       updateSyncHeader();
-      showToast('Failed to read from Google Drive URL');
+      if (!silent) showToast('Failed to read from Google Drive URL');
+    } finally {
+      isSyncInFlight = false;
     }
   }
 
@@ -1564,13 +1662,37 @@ const App = (() => {
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js').catch(() => {});
+      navigator.serviceWorker.register('./sw.js?v=4').then((reg) => {
+        if (reg && reg.update) reg.update();
+      }).catch(() => {});
     });
   }
 
   window.addEventListener('DOMContentLoaded', () => {
     render();
+    if (isCloudConfigured(state)) {
+      pullFromCloud({ silent: true, onlyIfNewer: true });
+    }
   });
+
+  // Automatically sync across PC & Phone whenever tab/app gains focus or every 10s
+  window.addEventListener('focus', () => {
+    if (isCloudConfigured(state)) {
+      pullFromCloud({ silent: true, onlyIfNewer: true });
+    }
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && isCloudConfigured(state)) {
+      pullFromCloud({ silent: true, onlyIfNewer: true });
+    }
+  });
+
+  setInterval(() => {
+    if (document.visibilityState === 'visible' && isCloudConfigured(state)) {
+      pullFromCloud({ silent: true, onlyIfNewer: true });
+    }
+  }, 10000);
 
   return {
     SetScreen(scr) {
@@ -1748,8 +1870,12 @@ const App = (() => {
       state.githubToken = tokEl ? tokEl.value.trim() : '';
       state.gistId = idEl ? idEl.value.trim() : '';
       ui.syncStatus = isCloudConfigured(state) ? 'synced' : 'local';
-      saveState(true);
-      showToast(state.githubToken ? 'Private GitHub Gist credentials saved' : 'Cleared GitHub Token');
+      saveState(false);
+      if (isCloudConfigured(state)) {
+        pullFromCloud({ silent: false, onlyIfNewer: false, pushIfEmpty: true });
+      } else {
+        showToast('Cleared GitHub Token');
+      }
     },
     SaveSyncUrl() {
       const el = document.getElementById('sync-url-input');
@@ -1759,18 +1885,20 @@ const App = (() => {
         state.syncPasskey = passEl.value.trim();
       }
       ui.syncStatus = isCloudConfigured(state) ? 'synced' : 'local';
-      saveState(true);
+      saveState(false);
       if (state.syncUrl && !state.syncPasskey) {
         showToast('URL saved — also set your Secret Passkey above');
+      } else if (isCloudConfigured(state)) {
+        pullFromCloud({ silent: false, onlyIfNewer: false, pushIfEmpty: true });
       } else {
-        showToast(state.syncUrl ? 'Authenticated Drive Sync saved' : 'Switched to Local mode');
+        showToast('Switched to Local mode');
       }
     },
     PushDriveManual() {
       pushToCloud(true);
     },
     PullDriveManual() {
-      pullFromCloud();
+      pullFromCloud({ silent: false, onlyIfNewer: false });
     },
     CopyDriveScript() {
       const passEl = document.getElementById('sec-passkey-input');
