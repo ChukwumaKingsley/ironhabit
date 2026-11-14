@@ -1,32 +1,34 @@
 /**
- * IRONHABIT — Password-Protected Google Drive Cloud Sync Script
- * =============================================================
- * Why does Google Apps Script ask for "Who has access: Anyone"?
- * Because Google blocks cross-domain browser fetch() requests from github.io
- * unless the endpoint is reachable without a Google cookie redirect.
+ * IRONHABIT — Google Drive Auto-Sync Endpoint (Passkey-Protected)
  *
- * To make it 100% private and authenticated, this script enforces your own
- * SECRET_PASSKEY on every read (GET) and write (POST). Any request without
- * your exact passkey is rejected immediately.
+ * Security:
+ * - Every GET and POST request must include your Passkey.
+ * - If you set SECRET_PASSKEY below, it checks against that exact string.
+ * - Even if you leave SECRET_PASSKEY as 'CHANGE_THIS_TO_YOUR_SECRET_PASSKEY',
+ *   the script automatically binds and locks to the first non-empty Passkey
+ *   you send from the IronHabit app (stored in ScriptProperties).
  */
 
 const FILE_NAME = 'fitness-tracker-data.json';
-
-// Set your own secret passkey here (must match the Passkey you enter in the app):
-const SECRET_PASSKEY = 'CHANGE_ME_TO_YOUR_SECRET_PASSKEY';
+const SECRET_PASSKEY = 'CHANGE_THIS_TO_YOUR_SECRET_PASSKEY';
 
 function isAuthorized(key) {
-  return Boolean(
-    SECRET_PASSKEY &&
-    SECRET_PASSKEY !== 'CHANGE_ME_TO_YOUR_SECRET_PASSKEY' &&
-    key === SECRET_PASSKEY
-  );
-}
+  const incoming = String(key || '').trim();
+  if (!incoming) return false;
 
-function jsonResponse(obj) {
-  return ContentService
-    .createTextOutput(JSON.stringify(obj))
-    .setMimeType(ContentService.MimeType.JSON);
+  const configured = String(SECRET_PASSKEY || '').trim();
+  if (configured && configured !== 'CHANGE_THIS_TO_YOUR_SECRET_PASSKEY') {
+    return incoming === configured;
+  }
+
+  // Auto-bind on first authenticated request from the app
+  const props = PropertiesService.getScriptProperties();
+  const bound = props.getProperty('BOUND_PASSKEY');
+  if (!bound) {
+    props.setProperty('BOUND_PASSKEY', incoming);
+    return true;
+  }
+  return incoming === bound;
 }
 
 function getOrCreateFile() {
@@ -34,56 +36,47 @@ function getOrCreateFile() {
   if (files.hasNext()) {
     return files.next();
   }
-  const initialData = JSON.stringify({
-    version: 2,
-    updatedAt: 0,
-    payload: null
-  }, null, 2);
-  return DriveApp.createFile(FILE_NAME, initialData, MimeType.PLAIN_TEXT);
+  const initialPayload = JSON.stringify({ version: 2, updatedAt: 0, payload: null }, null, 2);
+  return DriveApp.createFile(FILE_NAME, initialPayload, MimeType.PLAIN_TEXT);
 }
 
 function doGet(e) {
-  try {
-    const key = e && e.parameter ? e.parameter.key : '';
-    if (!isAuthorized(key)) {
-      return jsonResponse({ ok: false, error: 'Unauthorized: Invalid or missing passkey' });
-    }
-    const file = getOrCreateFile();
-    const content = file.getBlob().getDataAsString();
+  const key = (e && e.parameter && e.parameter.key) ? e.parameter.key : '';
+  if (!isAuthorized(key)) {
     return ContentService
-      .createTextOutput(content)
+      .createTextOutput(JSON.stringify({ ok: false, error: 'Unauthorized: invalid or missing passkey' }))
       .setMimeType(ContentService.MimeType.JSON);
-  } catch (err) {
-    return jsonResponse({ ok: false, error: err.toString() });
   }
+  const file = getOrCreateFile();
+  const content = file.getBlob().getDataAsString();
+  return ContentService
+    .createTextOutput(content)
+    .setMimeType(ContentService.MimeType.JSON);
 }
 
 function doPost(e) {
   try {
-    const raw = e && e.postData ? e.postData.contents : '';
-    if (!raw) {
-      return jsonResponse({ ok: false, error: 'Empty request body' });
-    }
+    const raw = (e && e.postData && e.postData.contents) ? e.postData.contents : '{}';
     const parsed = JSON.parse(raw);
-    if (!isAuthorized(parsed.passkey)) {
-      return jsonResponse({ ok: false, error: 'Unauthorized: Invalid or missing passkey' });
+    const key = (parsed && parsed.passkey) || (e && e.parameter && e.parameter.key) || '';
+    if (!isAuthorized(key)) {
+      return ContentService
+        .createTextOutput(JSON.stringify({ ok: false, error: 'Unauthorized: invalid or missing passkey' }))
+        .setMimeType(ContentService.MimeType.JSON);
     }
-
     const toSave = {
       version: parsed.version || 2,
       updatedAt: parsed.updatedAt || Date.now(),
-      payload: parsed.payload
+      payload: parsed.payload || null
     };
-
     const file = getOrCreateFile();
     file.setContent(JSON.stringify(toSave, null, 2));
-
-    return jsonResponse({
-      ok: true,
-      updatedAt: toSave.updatedAt,
-      fileName: FILE_NAME
-    });
+    return ContentService
+      .createTextOutput(JSON.stringify({ ok: true, updatedAt: toSave.updatedAt }))
+      .setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
-    return jsonResponse({ ok: false, error: err.toString() });
+    return ContentService
+      .createTextOutput(JSON.stringify({ ok: false, error: String(err) }))
+      .setMimeType(ContentService.MimeType.JSON);
   }
 }

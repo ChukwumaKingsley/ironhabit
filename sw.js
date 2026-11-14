@@ -1,4 +1,4 @@
-const CACHE_NAME = 'iron-habit-v2';
+const CACHE_NAME = 'iron-habit-v3';
 const ASSETS = [
   './',
   './index.html',
@@ -33,21 +33,24 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
   // Never cache Google Apps Script or GitHub API sync requests
-  if (url.hostname.includes('script.google.com') || url.hostname.includes('googleusercontent.com') || url.hostname.includes('api.github.com')) {
+  if (
+    url.hostname.includes('script.google.com') ||
+    url.hostname.includes('googleusercontent.com') ||
+    url.hostname.includes('api.github.com')
+  ) {
     return;
   }
+
+  // Network-first so updates to app.js / index.html are picked up immediately
   event.respondWith(
-    caches.match(event.request).then((cachedResponse) => {
-      const fetchPromise = fetch(event.request)
-        .then((networkResponse) => {
-          if (networkResponse && networkResponse.status === 200 && event.request.method === 'GET') {
-            const responseClone = networkResponse.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, responseClone));
-          }
-          return networkResponse;
-        })
-        .catch(() => cachedResponse);
-      return cachedResponse || fetchPromise;
-    })
+    fetch(event.request)
+      .then((networkResponse) => {
+        if (networkResponse && networkResponse.status === 200 && event.request.method === 'GET') {
+          const responseClone = networkResponse.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, responseClone));
+        }
+        return networkResponse;
+      })
+      .catch(() => caches.match(event.request))
   );
 });

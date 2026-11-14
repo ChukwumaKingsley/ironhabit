@@ -14,9 +14,19 @@ function buildGDriveScriptSource(passkey) {
 const SECRET_PASSKEY = '${cleanKey}';
 
 function isAuthorized(key) {
-  return SECRET_PASSKEY &&
-         SECRET_PASSKEY !== 'CHANGE_THIS_TO_YOUR_SECRET_PASSKEY' &&
-         key === SECRET_PASSKEY;
+  const incoming = String(key || '').trim();
+  if (!incoming) return false;
+  const configured = String(SECRET_PASSKEY || '').trim();
+  if (configured && configured !== 'CHANGE_THIS_TO_YOUR_SECRET_PASSKEY') {
+    return incoming === configured;
+  }
+  const props = PropertiesService.getScriptProperties();
+  const bound = props.getProperty('BOUND_PASSKEY');
+  if (!bound) {
+    props.setProperty('BOUND_PASSKEY', incoming);
+    return true;
+  }
+  return incoming === bound;
 }
 
 function getOrCreateFile() {
@@ -37,8 +47,9 @@ function doGet(e) {
 }
 
 function doPost(e) {
-  const parsed = JSON.parse(e.postData.contents || '{}');
-  if (!isAuthorized(parsed.passkey)) {
+  const parsed = JSON.parse((e && e.postData && e.postData.contents) ? e.postData.contents : '{}');
+  const key = (parsed && parsed.passkey) || (e && e.parameter && e.parameter.key) || '';
+  if (!isAuthorized(key)) {
     return ContentService
       .createTextOutput(JSON.stringify({ ok: false, error: 'Unauthorized: invalid or missing passkey' }))
       .setMimeType(ContentService.MimeType.JSON);
@@ -483,12 +494,43 @@ const App = (() => {
     return match ? match.id : '';
   }
 
+  function captureSettingsInputsIntoState() {
+    const passEl = document.getElementById('sec-passkey-input');
+    const urlEl = document.getElementById('sync-url-input');
+    const tokEl = document.getElementById('github-token-input');
+    const idEl = document.getElementById('gist-id-input');
+    let changed = false;
+    if (passEl && passEl.value.trim() && passEl.value.trim() !== state.syncPasskey) {
+      state.syncPasskey = passEl.value.trim();
+      changed = true;
+    }
+    if (urlEl && urlEl.value.trim() && urlEl.value.trim() !== state.syncUrl) {
+      state.syncUrl = urlEl.value.trim();
+      changed = true;
+    }
+    if (tokEl && tokEl.value.trim() && tokEl.value.trim() !== state.githubToken) {
+      state.githubToken = tokEl.value.trim();
+      changed = true;
+    }
+    if (idEl && idEl.value.trim() && idEl.value.trim() !== state.gistId) {
+      state.gistId = idEl.value.trim();
+      changed = true;
+    }
+    if (changed) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      updateLockHeader();
+    }
+  }
+
   async function pushToCloud(manual = false) {
+    captureSettingsInputsIntoState();
     if (!isCloudConfigured(state)) {
       if (manual) {
         ui.screen = 'settings';
         render();
-        showToast('Configure Cloud Sync credentials in Goals first');
+        showToast(state.syncProvider === 'gdrive'
+          ? 'Enter both your Passkey and Google Drive Script URL first'
+          : 'Enter your GitHub Personal Access Token first');
       }
       return;
     }
@@ -556,11 +598,13 @@ const App = (() => {
 
     // Google Drive Passkey-Authenticated Sync
     try {
+      const sep = state.syncUrl.includes('?') ? '&' : '?';
+      const authUrl = `${state.syncUrl}${sep}key=${encodeURIComponent(state.syncPasskey || '')}`;
       const body = JSON.stringify({
         passkey: state.syncPasskey,
         ...envelope
       });
-      const res = await fetch(state.syncUrl, {
+      const res = await fetch(authUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body
@@ -588,8 +632,11 @@ const App = (() => {
   }
 
   async function pullFromCloud() {
+    captureSettingsInputsIntoState();
     if (!isCloudConfigured(state)) {
-      showToast('Configure Cloud Sync credentials first');
+      showToast(state.syncProvider === 'gdrive'
+        ? 'Enter both your Passkey and Google Drive Script URL first'
+        : 'Enter your GitHub Personal Access Token first');
       return;
     }
     ui.syncStatus = 'syncing';
