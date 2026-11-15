@@ -7,6 +7,7 @@
 const STORAGE_KEY = 'ironhabit_state_v2';
 const SESSION_UNLOCK_KEY = 'ironhabit_session_unlocked';
 const EDIT_WINDOW_DAYS = 7;
+const DEFAULT_PROFILE_NAME = 'Athlete';
 
 function buildGDriveScriptSource(passkey) {
   const cleanKey = (passkey || 'CHANGE_THIS_TO_YOUR_SECRET_PASSKEY').replace(/'/g, "\\'");
@@ -163,6 +164,9 @@ const App = (() => {
 
   function normalizeState(st) {
     if (!st || typeof st !== 'object') return createDefaultState();
+    if (!st.profileName || st.profileName === 'Kingsley') {
+      st.profileName = DEFAULT_PROFILE_NAME;
+    }
     const targetGym = Math.max(1, Math.min(7, Number(st.weeklyGymTarget) || 4));
     st.weeklyGymTarget = targetGym;
     if (st.gymScheduleMode !== 'daily' && st.gymScheduleMode !== 'custom') {
@@ -205,7 +209,7 @@ const App = (() => {
     return {
       version: 2,
       updatedAt: 0,
-      profileName: 'Kingsley',
+      profileName: DEFAULT_PROFILE_NAME,
       themeMode: 'dark', // 'dark' | 'light' | 'system'
       remindersEnabled: false,
       morningReminderTime: '08:00',
@@ -815,8 +819,8 @@ const App = (() => {
     }
     const rpId = window.location.hostname || 'localhost';
     const challenge = crypto.getRandomValues(new Uint8Array(32));
-    const userName = ((state.profileName || 'Kingsley').trim() || 'athlete').toLowerCase();
-    const displayName = (state.profileName || 'Kingsley').trim() || 'Athlete';
+    const userName = ((state.profileName || DEFAULT_PROFILE_NAME).trim() || 'athlete').toLowerCase();
+    const displayName = (state.profileName || DEFAULT_PROFILE_NAME).trim() || DEFAULT_PROFILE_NAME;
     const userId = new Uint8Array(16).fill(1);
 
     const credential = await navigator.credentials.create({
@@ -2553,7 +2557,7 @@ const App = (() => {
         id: 'profile',
         label: 'Profile & Display',
         shortLabel: 'Profile',
-        sub: `${escapeHtml((state.profileName || 'Kingsley').trim())} • ${(state.themeMode || 'dark').toUpperCase()}`,
+        sub: `${escapeHtml((state.profileName || DEFAULT_PROFILE_NAME).trim())} • ${(state.themeMode || 'dark').toUpperCase()}`,
         icon: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square"><path d="M20 21v-2a4 4 0 0 0-3-3.87"></path><path d="M4 21v-2a4 4 0 0 1 3-3.87"></path><circle cx="12" cy="7" r="4"></circle></svg>'
       },
       {
@@ -2607,7 +2611,7 @@ const App = (() => {
           <div style="display:flex;flex-wrap:wrap;gap:6px;">
             <input id="profile-name-input" type="text" class="text-input" style="flex:1;min-width:160px;"
                    placeholder="Display Name / Handle"
-                   value="${escapeHtml(state.profileName || 'Kingsley')}"
+                   value="${escapeHtml(state.profileName || DEFAULT_PROFILE_NAME)}"
                    onkeydown="if(event.key==='Enter') App.SaveProfileName()" />
             <button class="primary-btn smooth-ui" onclick="App.SaveProfileName()">Update Profile</button>
           </div>
@@ -3076,7 +3080,7 @@ const App = (() => {
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=17').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=18').then((reg) => {
         if (reg && reg.update) reg.update();
       }).catch(() => {});
     });
@@ -3563,7 +3567,7 @@ const App = (() => {
     SaveProfileName() {
       const el = document.getElementById('profile-name-input');
       const name = (el ? el.value : '').trim();
-      state.profileName = name || 'Kingsley';
+      state.profileName = name || DEFAULT_PROFILE_NAME;
       saveState(true);
       showToast(`Profile updated: ${state.profileName}`);
     },
