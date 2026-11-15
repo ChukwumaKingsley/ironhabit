@@ -162,6 +162,8 @@ const App = (() => {
       githubToken: '',
       gistId: '',
       appLockEnabled: false,
+      biometricEnabled: false,
+      biometricCredId: '',
       lastSyncedAt: null,
       exercises: [
         { id: 'pushups', name: 'Push-ups',   target: 50, unit: 'reps' },
@@ -176,6 +178,8 @@ const App = (() => {
     const copy = { ...st };
     delete copy.syncPasskey;
     delete copy.githubToken;
+    delete copy.biometricEnabled;
+    delete copy.biometricCredId;
     return copy;
   }
 
@@ -230,7 +234,7 @@ const App = (() => {
   let hasUnsyncedLocalChanges = false;
   let isSessionLocked = Boolean(
     state.appLockEnabled &&
-    state.syncPasskey &&
+    (state.syncPasskey || (state.biometricEnabled && state.biometricCredId)) &&
     sessionStorage.getItem(SESSION_UNLOCK_KEY) !== '1'
   );
 
@@ -245,6 +249,7 @@ const App = (() => {
     chartStyle: 'area',  // 'area' (default) | 'bar'
     syncStatus: isCloudConfigured(state) ? 'synced' : 'local',
     settingsOpen: false,
+    settingsSection: 'profile', // 'profile' | 'reminders' | 'security' | 'sync' | 'data'
     showResetConfirm: false,
     confirmRemoveExId: null,
     deferredInstallPrompt: null
@@ -568,12 +573,125 @@ const App = (() => {
     }
   }
 
+  function bufferToBase64Url(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    for (let i = 0; i < bytes.byteLength; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+  }
+
+  function base64UrlToBuffer(base64url) {
+    const pad = '='.repeat((4 - (base64url.length % 4)) % 4);
+    const base64 = (base64url + pad).replace(/-/g, '+').replace(/_/g, '/');
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes.buffer;
+  }
+
+  function supportsBiometricAuth() {
+    return Boolean(window.PublicKeyCredential && navigator.credentials && navigator.credentials.create);
+  }
+
+  async function registerDeviceBiometrics() {
+    if (!supportsBiometricAuth()) {
+      throw new Error('Device biometrics require an HTTPS browser with WebAuthn support.');
+    }
+    const rpId = window.location.hostname || 'localhost';
+    const challenge = crypto.getRandomValues(new Uint8Array(32));
+    const userName = ((state.profileName || 'Kingsley').trim() || 'athlete').toLowerCase();
+    const displayName = (state.profileName || 'Kingsley').trim() || 'Athlete';
+    const userId = new Uint8Array(16).fill(1);
+
+    const credential = await navigator.credentials.create({
+      publicKey: {
+        challenge,
+        rp: { name: 'IRONHABIT', id: rpId },
+        user: {
+          id: userId,
+          name: userName,
+          displayName
+        },
+        pubKeyCredParams: [
+          { type: 'public-key', alg: -7 },
+          { type: 'public-key', alg: -257 }
+        ],
+        authenticatorSelection: {
+          authenticatorAttachment: 'platform',
+          userVerification: 'required',
+          residentKey: 'preferred'
+        },
+        timeout: 60000
+      }
+    });
+    if (!credential || !credential.rawId) {
+      throw new Error('Biometric registration returned no credential.');
+    }
+    return bufferToBase64Url(credential.rawId);
+  }
+
+  let isBiometricPromptActive = false;
+
+  async function verifyDeviceBiometrics(silentAuto = false) {
+    if (!supportsBiometricAuth() || !state.biometricCredId) {
+      if (!silentAuto) showToast('Biometric unlock is not configured on this device');
+      return false;
+    }
+    if (isBiometricPromptActive) return false;
+    isBiometricPromptActive = true;
+    try {
+      const rpId = window.location.hostname || 'localhost';
+      const challenge = crypto.getRandomValues(new Uint8Array(32));
+      const allowCredentials = state.biometricCredId
+        ? [{
+            type: 'public-key',
+            id: base64UrlToBuffer(state.biometricCredId),
+            transports: ['internal']
+          }]
+        : [];
+      const assertion = await navigator.credentials.get({
+        publicKey: {
+          challenge,
+          rpId,
+          allowCredentials,
+          userVerification: 'required',
+          timeout: 60000
+        }
+      });
+      if (assertion) {
+        isSessionLocked = false;
+        sessionStorage.setItem(SESSION_UNLOCK_KEY, '1');
+        renderAuthGate();
+        showToast('Unlocked with device biometrics');
+        return true;
+      }
+      return false;
+    } catch (err) {
+      if (!silentAuto) {
+        const msg = (err && err.name === 'NotAllowedError')
+          ? 'Biometric prompt cancelled or timed out — try again or use Passkey'
+          : 'Biometric verification unavailable — use Passkey / PIN';
+        showToast(msg);
+      }
+      return false;
+    } finally {
+      isBiometricPromptActive = false;
+    }
+  }
+
   function updateLockHeader() {
     const lockBtn = document.getElementById('hdr-lock-btn');
     if (lockBtn) {
-      const hasPass = Boolean(state.syncPasskey && state.syncPasskey.trim());
+      const hasPass = Boolean(
+        (state.syncPasskey && state.syncPasskey.trim()) ||
+        (state.biometricEnabled && state.biometricCredId)
+      );
       lockBtn.className = `icon-hdr-btn smooth-ui ${hasPass ? 'secured' : ''}`;
-      lockBtn.title = hasPass ? 'Lock App Now' : 'Set App Passkey in Profile & Settings';
+      lockBtn.title = hasPass ? 'Lock App Now' : 'Set App Passkey or Biometric Unlock in Profile & Settings';
     }
     const profBtn = document.getElementById('hdr-profile-btn');
     const profLbl = document.getElementById('hdr-profile-label');
@@ -593,22 +711,48 @@ const App = (() => {
       overlay.innerHTML = '';
       return;
     }
+    const bioReady = Boolean(state.biometricEnabled && state.biometricCredId);
+    const passReady = Boolean(state.syncPasskey && state.syncPasskey.trim());
+
     overlay.style.display = 'flex';
     overlay.innerHTML = `
       <div class="auth-gate-card">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
           <span class="brand-name">IRONHABIT</span>
-          <span class="locked-tag">PASSKEY LOCKED</span>
+          <span class="locked-tag">${bioReady ? 'BIOMETRIC LOCK' : 'PASSKEY LOCKED'}</span>
         </div>
         <div class="section-sub" style="margin-bottom:12px;">
-          Enter your Passkey / PIN to unlock your accountability logs and cloud sync session.
+          ${bioReady
+            ? 'Verify with your device biometrics (Face ID, Touch ID, Fingerprint, or Windows Hello) to unlock your accountability logs.'
+            : 'Enter your Passkey / PIN to unlock your accountability logs and cloud sync session.'}
         </div>
-        <div style="display:flex;gap:6px;margin-bottom:8px;">
-          <input id="unlock-passkey-input" type="password" class="text-input" style="flex:1;"
-                 placeholder="Enter Passkey / PIN"
-                 onkeydown="if(event.key==='Enter') App.UnlockSession()" />
-          <button class="primary-btn smooth-ui" onclick="App.UnlockSession()">Unlock</button>
-        </div>
+        ${bioReady ? `
+          <button class="primary-btn smooth-ui"
+                  style="width:100%;padding:10px 12px;margin-bottom:10px;display:flex;align-items:center;justify-content:center;gap:8px;font-size:0.8rem;"
+                  onclick="App.UnlockWithBiometrics()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M12 10a2 2 0 0 0-2 2c0 1.02-.1 2.51-.26 4"></path>
+              <path d="M14 13.12c0 2.38 0 6.38-1 8.88"></path>
+              <path d="M17.29 21.02c.12-.6.43-2.3.5-3.02"></path>
+              <path d="M2 12a10 10 0 0 1 18-6"></path>
+              <path d="M2 16h.01"></path>
+              <path d="M21.8 16c.2-2 .131-5.354 0-6"></path>
+              <path d="M5 19.5C5.5 18 6 15 6 12a6 6 0 0 1 .34-2"></path>
+              <path d="M8.65 22c.21-.66.45-1.32.57-2"></path>
+              <path d="M9 6.8a6 6 0 0 1 9 5.2v2"></path>
+            </svg>
+            <span>Unlock with Biometrics / Device Authenticator</span>
+          </button>
+        ` : ''}
+        ${(passReady || !bioReady) ? `
+          ${bioReady ? `<div class="section-sub" style="margin-bottom:6px;">Or unlock with Passkey / PIN</div>` : ''}
+          <div style="display:flex;gap:6px;margin-bottom:8px;">
+            <input id="unlock-passkey-input" type="password" class="text-input" style="flex:1;"
+                   placeholder="Enter Passkey / PIN"
+                   onkeydown="if(event.key==='Enter') App.UnlockSession()" />
+            <button class="primary-btn smooth-ui" onclick="App.UnlockSession()">Unlock</button>
+          </div>
+        ` : ''}
         <div style="font-size:0.75rem;color:var(--text-slate-500);">
           Protected session • Data stays encrypted/isolated to your credentials
         </div>
@@ -670,6 +814,7 @@ const App = (() => {
     if (!isCloudConfigured(state)) {
       if (manual) {
         ui.settingsOpen = true;
+        ui.settingsSection = 'sync';
         render();
         showToast(state.syncProvider === 'gdrive'
           ? 'Enter both your Passkey and Google Drive Script URL first'
@@ -827,7 +972,9 @@ const App = (() => {
       syncPasskey: state.syncPasskey,
       githubToken: state.githubToken,
       gistId: state.gistId,
-      appLockEnabled: state.appLockEnabled
+      appLockEnabled: state.appLockEnabled,
+      biometricEnabled: state.biometricEnabled,
+      biometricCredId: state.biometricCredId
     };
 
     if (state.syncProvider === 'gist') {
@@ -1792,14 +1939,16 @@ const App = (() => {
     `;
   }
 
-  // --- PROFILE & SETTINGS OVERLAY PANEL (OPENED FROM TOP-RIGHT HEADER) ---
+  // --- PROFILE & SETTINGS OVERLAY PANEL (SEGMENTED TWO-PANE ARCHITECTURE) ---
   function renderSettingsScreen() {
     const cloudReady = isCloudConfigured(state);
     const hasPasskey = Boolean(state.syncPasskey && state.syncPasskey.trim());
+    const bioActive = Boolean(state.biometricEnabled && state.biometricCredId);
     const logKeys = Object.keys(state.logs || {});
     const totalDaysLogged = logKeys.length;
     const totalGymVisits = logKeys.filter(k => state.logs[k] && state.logs[k].gym).length;
     const streaks = computeHomeStreaks();
+    const sec = ui.settingsSection || 'profile';
     const lastSyncText = state.lastSyncedAt
       ? new Date(state.lastSyncedAt).toLocaleString('en-US', {
           month: 'short',
@@ -1809,242 +1958,343 @@ const App = (() => {
         })
       : 'Not synced yet';
 
-    return `
-      <div class="settings-drawer" onclick="event.stopPropagation()">
-        <div class="settings-drawer-header">
-          <div>
-            <div class="brand-name" style="font-size:0.82rem;">PROFILE &amp; SETTINGS</div>
-            <div class="section-sub">Account, Display, Notifications, Cloud Sync &amp; Security</div>
-          </div>
-          <button class="step-btn smooth-ui" onclick="App.CloseSettings()">&#10005; Close</button>
-        </div>
+    const navItems = [
+      {
+        id: 'profile',
+        label: 'Profile & Display',
+        sub: `${escapeHtml((state.profileName || 'Kingsley').trim())} • ${(state.themeMode || 'dark').toUpperCase()}`,
+        icon: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square"><path d="M20 21v-2a4 4 0 0 0-3-3.87"></path><path d="M4 21v-2a4 4 0 0 1 3-3.87"></path><circle cx="12" cy="7" r="4"></circle></svg>'
+      },
+      {
+        id: 'reminders',
+        label: 'Smart Reminders',
+        sub: state.remindersEnabled ? `${state.morningReminderTime || '08:00'} & ${state.eveningReminderTime || '20:00'}` : 'Off',
+        icon: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>'
+      },
+      {
+        id: 'security',
+        label: 'Security & Lock',
+        sub: bioActive ? 'Biometrics' : hasPasskey ? 'Passkey' : 'Setup',
+        icon: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square"><rect x="4" y="11" width="16" height="10" rx="1"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg>'
+      },
+      {
+        id: 'sync',
+        label: 'Cloud Sync',
+        sub: cloudReady ? (state.syncProvider === 'gist' ? 'Gist' : 'Drive') : 'Local',
+        icon: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"></path></svg>'
+      },
+      {
+        id: 'data',
+        label: 'Data & Reset',
+        sub: `${totalDaysLogged}d logged`,
+        icon: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"></path><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"></path></svg>'
+      }
+    ];
 
-        <div class="settings-drawer-body">
-          <!-- 0. Athlete Profile & Lifetime Overview -->
-          <section class="surface-card card-pad">
-            <div class="card-head">
-              <div>
-                <div class="section-heading">Athlete Profile &amp; Account</div>
-                <div class="section-sub tabular-nums">Tracking since ${formatMonthDayYear(state.trackingStartDate || toDateKey())}</div>
-              </div>
-              ${ui.deferredInstallPrompt ? `
-                <button class="step-btn smooth-ui" style="color:var(--emerald-400);border-color:rgba(16,185,129,0.45);"
-                        onclick="App.PromptInstallApp()">
-                  Install App
-                </button>
-              ` : ''}
+    let contentHtml = '';
+
+    if (sec === 'profile') {
+      contentHtml = `
+        <section class="surface-card card-pad">
+          <div class="card-head">
+            <div>
+              <div class="section-heading">Athlete Identity &amp; Overview</div>
+              <div class="section-sub tabular-nums">Tracking since ${formatMonthDayYear(state.trackingStartDate || toDateKey())}</div>
             </div>
+            ${ui.deferredInstallPrompt ? `
+              <button class="step-btn smooth-ui" style="color:var(--emerald-400);border-color:rgba(16,185,129,0.45);"
+                      onclick="App.PromptInstallApp()">
+                Install App
+              </button>
+            ` : ''}
+          </div>
 
-        <div style="display:flex;flex-wrap:wrap;gap:6px;">
-          <input id="profile-name-input" type="text" class="text-input" style="flex:1;min-width:160px;"
-                 placeholder="Display Name / Handle"
-                 value="${escapeHtml(state.profileName || 'Kingsley')}"
-                 onkeydown="if(event.key==='Enter') App.SaveProfileName()" />
-          <button class="primary-btn smooth-ui" onclick="App.SaveProfileName()">Update Profile</button>
-        </div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;">
+            <input id="profile-name-input" type="text" class="text-input" style="flex:1;min-width:160px;"
+                   placeholder="Display Name / Handle"
+                   value="${escapeHtml(state.profileName || 'Kingsley')}"
+                   onkeydown="if(event.key==='Enter') App.SaveProfileName()" />
+            <button class="primary-btn smooth-ui" onclick="App.SaveProfileName()">Update Profile</button>
+          </div>
 
-        <div class="profile-stat-grid">
-          <div class="surface-inset" style="padding:8px;text-align:center;">
-            <div style="font-size:0.7rem;color:var(--text-slate-500);text-transform:uppercase;">Days Logged</div>
-            <div class="tabular-nums text-white" style="font-size:0.95rem;font-weight:700;margin-top:2px;">${totalDaysLogged}</div>
+          <div class="profile-stat-grid">
+            <div class="surface-inset" style="padding:8px;text-align:center;">
+              <div style="font-size:0.7rem;color:var(--text-slate-500);text-transform:uppercase;">Days Logged</div>
+              <div class="tabular-nums text-white" style="font-size:0.95rem;font-weight:700;margin-top:2px;">${totalDaysLogged}</div>
+            </div>
+            <div class="surface-inset" style="padding:8px;text-align:center;">
+              <div style="font-size:0.7rem;color:var(--text-slate-500);text-transform:uppercase;">Gym Visits</div>
+              <div class="tabular-nums text-sky" style="font-size:0.95rem;font-weight:700;margin-top:2px;">${totalGymVisits}</div>
+            </div>
+            <div class="surface-inset" style="padding:8px;text-align:center;">
+              <div style="font-size:0.7rem;color:var(--text-slate-500);text-transform:uppercase;">Best Streak</div>
+              <div class="tabular-nums text-emerald" style="font-size:0.95rem;font-weight:700;margin-top:2px;">${streaks.best}d</div>
+            </div>
           </div>
-          <div class="surface-inset" style="padding:8px;text-align:center;">
-            <div style="font-size:0.7rem;color:var(--text-slate-500);text-transform:uppercase;">Gym Visits</div>
-            <div class="tabular-nums text-sky" style="font-size:0.95rem;font-weight:700;margin-top:2px;">${totalGymVisits}</div>
-          </div>
-          <div class="surface-inset" style="padding:8px;text-align:center;">
-            <div style="font-size:0.7rem;color:var(--text-slate-500);text-transform:uppercase;">Best Streak</div>
-            <div class="tabular-nums text-emerald" style="font-size:0.95rem;font-weight:700;margin-top:2px;">${streaks.best}d</div>
-          </div>
-        </div>
+        </section>
 
-        <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border-card);display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
-          <div>
-            <div style="font-size:0.75rem;font-weight:600;color:var(--text-slate-200);">Display Mode</div>
-            <div class="section-sub">Choose Dark, Light, or System Default</div>
+        <section class="surface-card card-pad">
+          <div class="card-head">
+            <div>
+              <div class="section-heading">Appearance &amp; Theme Mode</div>
+              <div class="section-sub">Choose Dark, Light, or System Default</div>
+            </div>
+            <span class="text-sky" style="font-size:0.75rem;font-weight:600;text-transform:uppercase;">${escapeHtml(state.themeMode || 'dark')}</span>
           </div>
-          <div class="segmented-pair" style="display:grid;grid-template-columns:repeat(3, 1fr);min-width:210px;">
+          <div class="segmented-pair" style="display:grid;grid-template-columns:repeat(3, 1fr);">
             <button class="seg-btn ${(state.themeMode || 'dark') === 'dark' ? 'active' : ''} smooth-ui" onclick="App.SetThemeMode('dark')">Dark</button>
             <button class="seg-btn ${state.themeMode === 'light' ? 'active' : ''} smooth-ui" onclick="App.SetThemeMode('light')">Light</button>
             <button class="seg-btn ${state.themeMode === 'system' ? 'active' : ''} smooth-ui" onclick="App.SetThemeMode('system')">System</button>
           </div>
-        </div>
-      </section>
-
-      <!-- 0B. Morning & Evening Goal Reminders -->
-      <section class="surface-card card-pad">
-        <div class="card-head">
-          <div>
-            <div class="section-heading">Morning &amp; Evening Goal Reminders</div>
-            <div class="section-sub">Alerts you only when daily home targets or weekly gym goals are not yet met</div>
-          </div>
-          <button class="step-btn smooth-ui"
-                  style="${state.remindersEnabled ? 'border-color:var(--emerald-500);color:var(--emerald-400);' : ''}"
-                  onclick="App.ToggleReminders()">
-            ${state.remindersEnabled ? 'Reminders: ON' : 'Enable Reminders'}
-          </button>
-        </div>
-
-        <div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:8px;margin-bottom:8px;">
-          <div class="surface-inset" style="padding:8px;">
-            <div style="font-size:0.7rem;color:var(--text-slate-400);text-transform:uppercase;margin-bottom:4px;">Morning Check-In</div>
-            <input id="rem-morning-input" type="time" class="text-input tabular-nums" style="width:100%;font-weight:700;"
-                   value="${escapeHtml(state.morningReminderTime || '08:00')}"
-                   onchange="App.SaveReminderSchedule()" />
-          </div>
-          <div class="surface-inset" style="padding:8px;">
-            <div style="font-size:0.7rem;color:var(--text-slate-400);text-transform:uppercase;margin-bottom:4px;">Evening Accountability</div>
-            <input id="rem-evening-input" type="time" class="text-input tabular-nums" style="width:100%;font-weight:700;"
-                   value="${escapeHtml(state.eveningReminderTime || '20:00')}"
-                   onchange="App.SaveReminderSchedule()" />
-          </div>
-        </div>
-
-        <div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:6px;">
-          <button class="step-btn smooth-ui" onclick="App.SaveReminderSchedule()">Save Schedule</button>
-          <button class="step-btn smooth-ui" style="color:var(--sky-400);" onclick="App.TestReminderNow()">Test Alert Now</button>
-        </div>
-      </section>
-
-      <!-- 1. App Passkey Lock & Session Authentication -->
-      <section class="surface-card card-pad">
-        <div class="card-head">
-          <div>
-            <div class="section-heading">App Authentication &amp; Passkey Lock</div>
-            <div class="section-sub">Protects your app on this device and authenticates Google Drive sync</div>
-          </div>
-          <span class="${hasPasskey ? 'text-emerald' : 'text-amber'}" style="font-size:0.75rem;font-weight:600;">
-            ${hasPasskey ? (state.appLockEnabled ? 'Startup Lock ON' : 'Passkey Set') : 'No Passkey'}
-          </span>
-        </div>
-
-        <div class="security-note-box">
-          Static GitHub Pages only serves the UI shell — visitors with the public link only see their own isolated browser storage and <strong>cannot</strong> access or overwrite your data without your secret Passkey or GitHub Token below.
-        </div>
-
-        <div style="display:flex;flex-wrap:wrap;gap:6px;">
-          <input id="sec-passkey-input" type="password" class="text-input" style="flex:1;min-width:160px;"
-                 placeholder="Set Secret Passkey / PIN"
-                 value="${escapeHtml(state.syncPasskey || '')}" />
-          <button class="step-btn smooth-ui"
-                  style="${state.appLockEnabled ? 'border-color:var(--emerald-500);color:var(--emerald-400);' : ''}"
-                  onclick="App.ToggleAppLock()">
-            Require on Startup: ${state.appLockEnabled ? 'ON' : 'OFF'}
-          </button>
-          <button class="primary-btn smooth-ui" onclick="App.SavePasskeyOnly()">Save Passkey</button>
-        </div>
-      </section>
-
-      <!-- 2. Authenticated Cloud Sync -->
-      <section class="surface-card card-pad">
-        <div class="card-head">
-          <div>
-            <div class="section-heading">Authenticated Cloud Sync</div>
-            <div class="section-sub tabular-nums">Last Synced: ${escapeHtml(lastSyncText)}</div>
-          </div>
-          <span class="${cloudReady ? 'text-emerald' : 'text-muted'}" style="font-size:0.75rem;font-weight:600;">
-            ${cloudReady ? (state.syncProvider === 'gist' ? 'Private Gist Ready' : 'Drive Auth Ready') : 'Local Only'}
-          </span>
-        </div>
-
-        <!-- Provider Switcher -->
-        <div class="period-4-grid" style="grid-template-columns:repeat(2, 1fr);margin-bottom:10px;">
-          <button class="seg-btn ${state.syncProvider === 'gist' ? 'active' : ''} smooth-ui"
-                  onclick="App.SetSyncProvider('gist')">
-            Private GitHub Gist (Bearer Token)
-          </button>
-          <button class="seg-btn ${state.syncProvider === 'gdrive' ? 'active' : ''} smooth-ui"
-                  onclick="App.SetSyncProvider('gdrive')">
-            Google Drive (Passkey Verified)
-          </button>
-        </div>
-
-        ${state.syncProvider === 'gist' ? `
-          <div class="security-note-box">
-            <strong>100% Private (No "Anyone" setting):</strong> Uses your GitHub Personal Access Token (<code>gist</code> scope, saved only in this device's storage) to sync <code>fitness-tracker-data.json</code> to a private GitHub Gist over <code>Authorization: Bearer</code>.
-          </div>
-          <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;">
-            <input id="github-token-input" type="password" class="text-input" style="flex:2;min-width:180px;"
-                   placeholder="GitHub Personal Access Token (ghp_... with 'gist' scope)"
-                   value="${escapeHtml(state.githubToken || '')}" />
-            <input id="gist-id-input" type="text" class="text-input tabular-nums" style="flex:1;min-width:120px;"
-                   placeholder="Gist ID (auto-filled)"
-                   value="${escapeHtml(state.gistId || '')}" />
-            <button class="primary-btn smooth-ui" onclick="App.SaveGistConfig()">Save</button>
-          </div>
-        ` : `
-          <div class="security-note-box">
-            <strong>Passkey-Verified Google Drive Sync:</strong> Every <code>GET</code> &amp; <code>POST</code> request is verified against your <code>SECRET_PASSKEY</code> inside your Apps Script — unauthenticated requests are rejected.
-          </div>
-          <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;">
-            <input id="sync-url-input" type="url" class="text-input" style="flex:1;min-width:200px;"
-                   placeholder="Paste Google Apps Script Web App URL (https://script.google.com/macros/s/.../exec)"
-                   value="${escapeHtml(state.syncUrl || '')}" />
-            <button class="primary-btn smooth-ui" onclick="App.SaveSyncUrl()">Save</button>
-          </div>
-        `}
-
-        <div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:6px;">
-          <button class="step-btn" onclick="App.PushDriveManual()">Sync Now</button>
-          <button class="step-btn" onclick="App.PullDriveManual()">Pull Cloud</button>
-          <button class="step-btn" onclick="App.CopyDriveScript()">Copy Protected Script</button>
-        </div>
-      </section>
-
-      <!-- 3. Local JSON Backups -->
-      <section class="surface-card card-pad">
-        <div class="card-head">
-          <div>
-            <div class="section-heading">Manual JSON Backup &amp; Restore</div>
-            <div class="section-sub">Download a snapshot of your logs or restore from a JSON file</div>
-          </div>
-        </div>
-        <div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:6px;">
-          <button class="step-btn" onclick="App.ExportJson()">Export JSON Backup</button>
-          <label class="step-btn" style="text-align:center;cursor:pointer;">
-            Import JSON Backup
-            <input type="file" accept=".json" style="display:none;" onchange="App.ImportJson(event)" />
-          </label>
-        </div>
-      </section>
-
-      <!-- 4. Danger Zone — Protected Data Reset -->
-      <section class="surface-card card-pad danger-zone-card">
-        <div class="card-head" style="margin-bottom:4px;">
-          <div>
-            <div class="section-heading" style="color:var(--red-400);">Danger Zone — Wipe All Entries</div>
-            <div class="section-sub tabular-nums">Permanently deletes all ${totalDaysLogged} logged days and restarts from Today</div>
-          </div>
-          ${!ui.showResetConfirm ? `
-            <button class="step-btn smooth-ui" style="color:var(--red-400);border-color:rgba(239,68,68,0.4);" onclick="App.OpenResetConfirm()">
-              Unlock Reset...
+        </section>
+      `;
+    } else if (sec === 'reminders') {
+      contentHtml = `
+        <section class="surface-card card-pad">
+          <div class="card-head">
+            <div>
+              <div class="section-heading">Goal-Aware Notification Schedule</div>
+              <div class="section-sub">Morning check-in and evening accountability alerts</div>
+            </div>
+            <button class="step-btn smooth-ui"
+                    style="${state.remindersEnabled ? 'border-color:var(--emerald-500);color:var(--emerald-400);' : ''}"
+                    onclick="App.ToggleReminders()">
+              ${state.remindersEnabled ? 'Reminders: ON' : 'Enable Reminders'}
             </button>
-          ` : `
-            <button class="step-btn smooth-ui" onclick="App.CancelResetConfirm()">
-              Cancel
-            </button>
-          `}
-        </div>
+          </div>
 
-        ${ui.showResetConfirm ? `
-          <div class="danger-confirm-box">
-            <div style="font-size:0.75rem;color:var(--text-slate-200);font-weight:600;margin-bottom:8px;">
-              Security Verification Required: Type <code class="text-red">RESET</code> ${hasPasskey ? 'and enter your Secret Passkey' : ''} to permanently wipe all entries.
+          <div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:8px;margin-bottom:8px;">
+            <div class="surface-inset" style="padding:8px;">
+              <div style="font-size:0.7rem;color:var(--text-slate-400);text-transform:uppercase;margin-bottom:4px;">Morning Check-In</div>
+              <input id="rem-morning-input" type="time" class="text-input tabular-nums" style="width:100%;font-weight:700;"
+                     value="${escapeHtml(state.morningReminderTime || '08:00')}"
+                     onchange="App.SaveReminderSchedule()" />
+            </div>
+            <div class="surface-inset" style="padding:8px;">
+              <div style="font-size:0.7rem;color:var(--text-slate-400);text-transform:uppercase;margin-bottom:4px;">Evening Accountability</div>
+              <input id="rem-evening-input" type="time" class="text-input tabular-nums" style="width:100%;font-weight:700;"
+                     value="${escapeHtml(state.eveningReminderTime || '20:00')}"
+                     onchange="App.SaveReminderSchedule()" />
+            </div>
+          </div>
+
+          <div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:6px;">
+            <button class="step-btn smooth-ui" onclick="App.SaveReminderSchedule()">Save Schedule</button>
+            <button class="step-btn smooth-ui" style="color:var(--sky-400);" onclick="App.TestReminderNow()">Test Alert Now</button>
+          </div>
+        </section>
+
+        <details class="settings-accordion">
+          <summary class="settings-accordion-summary">
+            <span>How Smart Reminders Work</span>
+            <span class="accordion-chevron">&#9662;</span>
+          </summary>
+          <div class="settings-accordion-body">
+            <div class="section-sub" style="line-height:1.5;">
+              Notifications stay completely silent once your daily home targets are met (or when your weekly gym quota is on track). You only get nudged in the morning or evening when targets remain unfinished so alerts stay actionable rather than noisy.
+            </div>
+          </div>
+        </details>
+      `;
+    } else if (sec === 'security') {
+      contentHtml = `
+        <section class="surface-card card-pad">
+          <div class="card-head">
+            <div>
+              <div class="section-heading">Device Biometric Unlock</div>
+              <div class="section-sub">Face ID, Touch ID, Fingerprint, or Windows Hello</div>
+            </div>
+            <span class="${bioActive ? 'text-emerald' : 'text-amber'}" style="font-size:0.75rem;font-weight:600;">
+              ${bioActive ? 'Biometrics Active' : 'Not Enrolled'}
+            </span>
+          </div>
+
+          <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;">
+            <button class="primary-btn smooth-ui"
+                    style="${bioActive ? 'background-color:var(--bg-inset);border:1px solid var(--emerald-500);color:var(--emerald-400);' : ''}"
+                    onclick="App.ToggleBiometricAuth()">
+              ${bioActive ? 'Biometrics: ON (Disable)' : 'Enable Biometric Unlock'}
+            </button>
+
+            <button class="step-btn smooth-ui"
+                    style="${state.appLockEnabled ? 'border-color:var(--emerald-500);color:var(--emerald-400);' : ''}"
+                    onclick="App.ToggleAppLock()">
+              Require on Startup: ${state.appLockEnabled ? 'ON' : 'OFF'}
+            </button>
+          </div>
+        </section>
+
+        <details class="settings-accordion" ${!bioActive ? 'open' : ''}>
+          <summary class="settings-accordion-summary">
+            <span>Secret Passkey / PIN (Fallback &amp; Cloud Sync Key)</span>
+            <span class="accordion-chevron">&#9662;</span>
+          </summary>
+          <div class="settings-accordion-body">
+            <div class="security-note-box">
+              Static GitHub Pages only serves the UI shell — visitors with the public link only see their own isolated browser storage and <strong>cannot</strong> access or overwrite your data without your Secret Passkey or GitHub Token.
             </div>
             <div style="display:flex;flex-wrap:wrap;gap:6px;">
-              <input id="reset-confirm-word" type="text" class="text-input" style="flex:1;min-width:130px;"
-                     placeholder="Type RESET in all caps" />
-              ${hasPasskey ? `
-                <input id="reset-confirm-passkey" type="password" class="text-input" style="flex:1;min-width:130px;"
-                       placeholder="Enter Secret Passkey" />
-              ` : ''}
-              <button class="danger-btn smooth-ui" onclick="App.ConfirmWipeAllData()">
-                Confirm Permanent Wipe
-              </button>
+              <input id="sec-passkey-input" type="password" class="text-input" style="flex:1;min-width:160px;"
+                     placeholder="Set Secret Passkey / PIN"
+                     value="${escapeHtml(state.syncPasskey || '')}" />
+              <button class="primary-btn smooth-ui" onclick="App.SavePasskeyOnly()">Save Passkey</button>
             </div>
           </div>
-        ` : ''}
-      </section>
+        </details>
+      `;
+    } else if (sec === 'sync') {
+      contentHtml = `
+        <section class="surface-card card-pad">
+          <div class="card-head">
+            <div>
+              <div class="section-heading">Cloud Sync Provider &amp; Connection</div>
+              <div class="section-sub tabular-nums">Last Synced: ${escapeHtml(lastSyncText)}</div>
+            </div>
+            <span class="${cloudReady ? 'text-emerald' : 'text-muted'}" style="font-size:0.75rem;font-weight:600;">
+              ${cloudReady ? (state.syncProvider === 'gist' ? 'Private Gist Ready' : 'Drive Auth Ready') : 'Local Only'}
+            </span>
+          </div>
+
+          <div class="period-4-grid" style="grid-template-columns:repeat(2, 1fr);margin-bottom:10px;">
+            <button class="seg-btn ${state.syncProvider === 'gist' ? 'active' : ''} smooth-ui"
+                    onclick="App.SetSyncProvider('gist')">
+              Private GitHub Gist
+            </button>
+            <button class="seg-btn ${state.syncProvider === 'gdrive' ? 'active' : ''} smooth-ui"
+                    onclick="App.SetSyncProvider('gdrive')">
+              Google Drive (Passkey)
+            </button>
+          </div>
+
+          ${state.syncProvider === 'gist' ? `
+            <div class="security-note-box">
+              <strong>100% Private (No "Anyone" setting):</strong> Uses your GitHub Personal Access Token (<code>gist</code> scope, stored locally) to sync <code>fitness-tracker-data.json</code> over <code>Authorization: Bearer</code>.
+            </div>
+            <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;">
+              <input id="github-token-input" type="password" class="text-input" style="flex:2;min-width:180px;"
+                     placeholder="GitHub Personal Access Token (ghp_... with 'gist' scope)"
+                     value="${escapeHtml(state.githubToken || '')}" />
+              <input id="gist-id-input" type="text" class="text-input tabular-nums" style="flex:1;min-width:120px;"
+                     placeholder="Gist ID (auto-filled)"
+                     value="${escapeHtml(state.gistId || '')}" />
+              <button class="primary-btn smooth-ui" onclick="App.SaveGistConfig()">Save</button>
+            </div>
+          ` : `
+            <div class="security-note-box">
+              <strong>Passkey-Verified Google Drive Sync:</strong> Every <code>GET</code> &amp; <code>POST</code> request verifies your Secret Passkey from <strong>Security &amp; Lock</strong> inside your Apps Script.
+            </div>
+            <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;">
+              <input id="sync-url-input" type="url" class="text-input" style="flex:1;min-width:200px;"
+                     placeholder="Paste Google Apps Script Web App URL (https://script.google.com/macros/s/.../exec)"
+                     value="${escapeHtml(state.syncUrl || '')}" />
+              <button class="primary-btn smooth-ui" onclick="App.SaveSyncUrl()">Save</button>
+            </div>
+          `}
+
+          <div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:6px;">
+            <button class="step-btn" onclick="App.PushDriveManual()">Sync Now</button>
+            <button class="step-btn" onclick="App.PullDriveManual()">Pull Cloud</button>
+          </div>
+        </section>
+
+        <details class="settings-accordion">
+          <summary class="settings-accordion-summary">
+            <span>Google Apps Script Setup &amp; Protected Script Code</span>
+            <span class="accordion-chevron">&#9662;</span>
+          </summary>
+          <div class="settings-accordion-body">
+            <div class="section-sub" style="margin-bottom:10px;line-height:1.5;">
+              1. Set your Secret Passkey in <strong>Security &amp; Lock</strong>.<br />
+              2. Copy the pre-filled script below into <strong>script.google.com</strong>, deploy as a Web App (<em>Execute as: Me</em>), and paste the <code>/exec</code> URL above.
+            </div>
+            <button class="step-btn smooth-ui" style="width:100%;" onclick="App.CopyDriveScript()">Copy Protected Script</button>
+          </div>
+        </details>
+      `;
+    } else {
+      contentHtml = `
+        <section class="surface-card card-pad">
+          <div class="card-head">
+            <div>
+              <div class="section-heading">Manual JSON Backup &amp; Restore</div>
+              <div class="section-sub">Export a local snapshot or import an existing backup</div>
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:6px;">
+            <button class="step-btn" onclick="App.ExportJson()">Export JSON Backup</button>
+            <label class="step-btn" style="text-align:center;cursor:pointer;">
+              Import JSON Backup
+              <input type="file" accept=".json" style="display:none;" onchange="App.ImportJson(event)" />
+            </label>
+          </div>
+        </section>
+
+        <details class="settings-accordion danger-accordion" ${ui.showResetConfirm ? 'open' : ''}>
+          <summary class="settings-accordion-summary" style="color:var(--red-400);">
+            <span>Danger Zone — Wipe All Entries</span>
+            <span class="accordion-chevron">&#9662;</span>
+          </summary>
+          <div class="settings-accordion-body">
+            <div class="section-sub tabular-nums" style="margin-bottom:8px;">
+              Permanently deletes all ${totalDaysLogged} logged days and restarts tracking from Today.
+            </div>
+            ${!ui.showResetConfirm ? `
+              <button class="step-btn smooth-ui" style="color:var(--red-400);border-color:rgba(239,68,68,0.4);" onclick="App.OpenResetConfirm()">
+                Unlock Reset...
+              </button>
+            ` : `
+              <div class="danger-confirm-box" style="margin-top:0;">
+                <div style="font-size:0.75rem;color:var(--text-slate-200);font-weight:600;margin-bottom:8px;">
+                  Security Verification Required: Type <code class="text-red">RESET</code> ${hasPasskey ? 'and enter your Secret Passkey' : ''} to permanently wipe all entries.
+                </div>
+                <div style="display:flex;flex-wrap:wrap;gap:6px;">
+                  <input id="reset-confirm-word" type="text" class="text-input" style="flex:1;min-width:130px;"
+                         placeholder="Type RESET in all caps" />
+                  ${hasPasskey ? `
+                    <input id="reset-confirm-passkey" type="password" class="text-input" style="flex:1;min-width:130px;"
+                           placeholder="Enter Secret Passkey" />
+                  ` : ''}
+                  <button class="danger-btn smooth-ui" onclick="App.ConfirmWipeAllData()">
+                    Confirm Permanent Wipe
+                  </button>
+                  <button class="step-btn smooth-ui" onclick="App.CancelResetConfirm()">
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            `}
+          </div>
+        </details>
+      `;
+    }
+
+    return `
+      <div class="settings-drawer" onclick="event.stopPropagation()">
+        <div class="settings-drawer-header">
+          <div>
+            <div class="brand-name" style="font-size:0.85rem;">SETTINGS &amp; ACCOUNT</div>
+            <div class="section-sub">Segmented configuration &amp; device preferences</div>
+          </div>
+          <button class="step-btn smooth-ui" onclick="App.CloseSettings()">&#10005; Close</button>
+        </div>
+
+        <div class="settings-split-layout">
+          <nav class="settings-side-nav">
+            ${navItems.map(item => `
+              <button class="settings-nav-btn smooth-ui ${sec === item.id ? 'active' : ''}"
+                      onclick="App.SetSettingsSection('${item.id}')">
+                <span class="settings-nav-icon">${item.icon}</span>
+                <span class="settings-nav-text">
+                  <span class="settings-nav-label">${item.label}</span>
+                  <span class="settings-nav-sub tabular-nums">${item.sub}</span>
+                </span>
+              </button>
+            `).join('')}
+          </nav>
+
+          <div class="settings-content-pane">
+            ${contentHtml}
+          </div>
         </div>
       </div>
     `;
@@ -2095,6 +2345,7 @@ const App = (() => {
 
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && ui.settingsOpen) {
+      captureSettingsInputsIntoState();
       ui.settingsOpen = false;
       ui.showResetConfirm = false;
       render();
@@ -2109,7 +2360,7 @@ const App = (() => {
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=10').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=12').then((reg) => {
         if (reg && reg.update) reg.update();
       }).catch(() => {});
     });
@@ -2126,6 +2377,9 @@ const App = (() => {
     checkScheduledReminders();
     if (isCloudConfigured(state)) {
       pullFromCloud({ silent: true, onlyIfNewer: true });
+    }
+    if (isSessionLocked && state.biometricEnabled && state.biometricCredId) {
+      setTimeout(() => verifyDeviceBiometrics(true), 180);
     }
   });
 
@@ -2165,18 +2419,31 @@ const App = (() => {
       ui.confirmRemoveExId = null;
       render();
     },
-    OpenSettings() {
+    OpenSettings(sec) {
+      if (sec) ui.settingsSection = sec;
       ui.settingsOpen = true;
       ui.showResetConfirm = false;
       render();
     },
     CloseSettings() {
+      captureSettingsInputsIntoState();
       ui.settingsOpen = false;
       ui.showResetConfirm = false;
       render();
     },
-    ToggleSettings() {
+    ToggleSettings(sec) {
+      if (ui.settingsOpen) {
+        captureSettingsInputsIntoState();
+      } else if (sec) {
+        ui.settingsSection = sec;
+      }
       ui.settingsOpen = !ui.settingsOpen;
+      ui.showResetConfirm = false;
+      render();
+    },
+    SetSettingsSection(sec) {
+      captureSettingsInputsIntoState();
+      ui.settingsSection = sec;
       ui.showResetConfirm = false;
       render();
     },
@@ -2407,7 +2674,7 @@ const App = (() => {
     SavePasskeyOnly() {
       const passEl = document.getElementById('sec-passkey-input');
       state.syncPasskey = passEl ? passEl.value.trim() : '';
-      if (state.syncPasskey) {
+      if (state.syncPasskey || (state.biometricEnabled && state.biometricCredId)) {
         sessionStorage.setItem(SESSION_UNLOCK_KEY, '1');
       } else {
         state.appLockEnabled = false;
@@ -2416,19 +2683,48 @@ const App = (() => {
       saveState(false);
       showToast(state.syncPasskey ? 'Secret Passkey saved' : 'Passkey cleared');
     },
+    async ToggleBiometricAuth() {
+      if (state.biometricEnabled && state.biometricCredId) {
+        state.biometricEnabled = false;
+        state.biometricCredId = '';
+        if (!state.syncPasskey) {
+          state.appLockEnabled = false;
+        }
+        saveState(false);
+        showToast('Device biometric unlock disabled');
+        return;
+      }
+      try {
+        const credId = await registerDeviceBiometrics();
+        state.biometricCredId = credId;
+        state.biometricEnabled = true;
+        state.appLockEnabled = true;
+        sessionStorage.setItem(SESSION_UNLOCK_KEY, '1');
+        saveState(false);
+        showToast('Device biometric unlock enabled');
+      } catch (err) {
+        const msg = (err && err.name === 'NotAllowedError')
+          ? 'Biometric setup cancelled or blocked by device authenticator'
+          : (err && err.message) || 'Device biometrics unavailable in this browser';
+        showToast(msg);
+      }
+    },
+    async UnlockWithBiometrics() {
+      await verifyDeviceBiometrics(false);
+    },
     ToggleAppLock() {
       const passEl = document.getElementById('sec-passkey-input');
       if (passEl && passEl.value.trim()) {
         state.syncPasskey = passEl.value.trim();
       }
-      if (!state.syncPasskey) {
-        showToast('Enter a Secret Passkey first');
+      if (!state.syncPasskey && !(state.biometricEnabled && state.biometricCredId)) {
+        showToast('Enter a Secret Passkey or enable Biometric Unlock first');
         return;
       }
       state.appLockEnabled = !state.appLockEnabled;
       sessionStorage.setItem(SESSION_UNLOCK_KEY, '1');
       saveState(false);
-      showToast(state.appLockEnabled ? 'Startup Passkey Lock enabled' : 'Startup Passkey Lock disabled');
+      showToast(state.appLockEnabled ? 'Startup Lock enabled' : 'Startup Lock disabled');
     },
     UnlockSession() {
       const el = document.getElementById('unlock-passkey-input');
@@ -2443,14 +2739,19 @@ const App = (() => {
       }
     },
     HeaderLockClick() {
-      if (state.syncPasskey && state.syncPasskey.trim()) {
+      const hasLockCred = Boolean(
+        (state.syncPasskey && state.syncPasskey.trim()) ||
+        (state.biometricEnabled && state.biometricCredId)
+      );
+      if (hasLockCred) {
         isSessionLocked = true;
         sessionStorage.removeItem(SESSION_UNLOCK_KEY);
         renderAuthGate();
       } else {
         ui.settingsOpen = true;
+        ui.settingsSection = 'security';
         render();
-        showToast('Set your Secret Passkey in Profile & Settings');
+        showToast('Enable Biometric Unlock or set a Passkey in Security & Lock');
       }
     },
     SaveGistConfig() {
@@ -2504,6 +2805,7 @@ const App = (() => {
         pushToCloud(true);
       } else {
         ui.settingsOpen = true;
+        ui.settingsSection = 'sync';
         render();
         showToast('Configure Authenticated Cloud Sync below');
       }
@@ -2535,7 +2837,9 @@ const App = (() => {
               syncPasskey: state.syncPasskey,
               githubToken: state.githubToken,
               gistId: state.gistId,
-              appLockEnabled: state.appLockEnabled
+              appLockEnabled: state.appLockEnabled,
+              biometricEnabled: state.biometricEnabled,
+              biometricCredId: state.biometricCredId
             };
             saveState(true);
             showToast('Imported backup');
