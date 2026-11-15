@@ -257,6 +257,22 @@ const App = (() => {
 
   let syncTimer = null;
 
+  let lastRenderedScreen = ui.screen;
+  let lastRenderedActiveDate = ui.activeDate;
+  let wasSettingsOpen = false;
+  let settingsCloseTimer = null;
+  let wasSessionLocked = isSessionLocked;
+  let authGateCloseTimer = null;
+  let lastHeaderMetrics = null;
+  let pendingFx = null;
+
+  function triggerPopClass(el, cls) {
+    if (!el) return;
+    el.classList.remove(cls);
+    void el.offsetWidth;
+    el.classList.add(cls);
+  }
+
   function loadState() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -707,16 +723,48 @@ const App = (() => {
     const overlay = document.getElementById('auth-gate-overlay');
     if (!overlay) return;
     if (!isSessionLocked) {
-      overlay.style.display = 'none';
-      overlay.innerHTML = '';
+      if (wasSessionLocked && overlay.style.display !== 'none') {
+        wasSessionLocked = false;
+        overlay.classList.remove('overlay-enter');
+        overlay.classList.add('overlay-exit');
+        const card = overlay.querySelector('.auth-gate-card');
+        if (card) {
+          card.classList.remove('drawer-enter');
+          card.classList.add('drawer-exit');
+        }
+        if (authGateCloseTimer) clearTimeout(authGateCloseTimer);
+        authGateCloseTimer = setTimeout(() => {
+          authGateCloseTimer = null;
+          if (!isSessionLocked) {
+            overlay.style.display = 'none';
+            overlay.innerHTML = '';
+            overlay.classList.remove('overlay-exit');
+          }
+        }, 185);
+      } else {
+        wasSessionLocked = false;
+        overlay.style.display = 'none';
+        overlay.innerHTML = '';
+        overlay.classList.remove('overlay-exit');
+      }
       return;
     }
+    if (authGateCloseTimer) {
+      clearTimeout(authGateCloseTimer);
+      authGateCloseTimer = null;
+    }
+    const isOpeningNow = !wasSessionLocked || overlay.style.display === 'none';
+    wasSessionLocked = true;
     const bioReady = Boolean(state.biometricEnabled && state.biometricCredId);
     const passReady = Boolean(state.syncPasskey && state.syncPasskey.trim());
 
+    overlay.classList.remove('overlay-exit');
+    if (isOpeningNow) overlay.classList.add('overlay-enter');
+    else overlay.classList.remove('overlay-enter');
+
     overlay.style.display = 'flex';
     overlay.innerHTML = `
-      <div class="auth-gate-card">
+      <div class="auth-gate-card ${isOpeningNow ? 'drawer-enter' : ''}">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
           <span class="brand-name">IRONHABIT</span>
           <span class="locked-tag">${bioReady ? 'BIOMETRIC LOCK' : 'PASSKEY LOCKED'}</span>
@@ -1141,7 +1189,8 @@ const App = (() => {
     updateLockHeader();
 
     const streaks = computeHomeStreaks();
-    document.getElementById('hdr-home-streak').textContent = String(streaks.current);
+    const hdrHomeStreakEl = document.getElementById('hdr-home-streak');
+    hdrHomeStreakEl.textContent = String(streaks.current);
     document.getElementById('hdr-home-best').textContent = `Best: ${streaks.best}d`;
 
     const avgPct = state.exercises.length > 0
@@ -1157,12 +1206,31 @@ const App = (() => {
     const curMon = getMondayKey(today);
     const gymSum = getWeekGymSummary(curMon);
     const gymStreak = computeGymWeeklyStreak();
-    document.getElementById('hdr-gym-ratio').textContent = `${gymSum.count}/${gymSum.target}`;
+    const hdrGymRatioEl = document.getElementById('hdr-gym-ratio');
+    const gymRatioStr = `${gymSum.count}/${gymSum.target}`;
+    hdrGymRatioEl.textContent = gymRatioStr;
     document.getElementById('hdr-gym-streak').textContent = `${gymStreak}w Streak`;
 
     const hdrGymStatus = document.getElementById('hdr-gym-status');
     hdrGymStatus.textContent = gymSum.met ? 'Met' : gymSum.count > 0 ? 'In Prog' : '0 Logged';
     hdrGymStatus.className = `tabular-nums ${gymSum.met ? 'text-emerald' : gymSum.count > 0 ? 'text-amber' : 'text-red'}`;
+
+    if (lastHeaderMetrics) {
+      if (lastHeaderMetrics.streak !== streaks.current) {
+        triggerPopClass(hdrHomeStreakEl, 'fx-hdr-pop');
+      }
+      if (lastHeaderMetrics.avgPct !== avgPct) {
+        triggerPopClass(hdrHomeStatus, 'fx-hdr-pop');
+      }
+      if (lastHeaderMetrics.gymRatio !== gymRatioStr) {
+        triggerPopClass(hdrGymRatioEl, 'fx-hdr-pop');
+      }
+    }
+    lastHeaderMetrics = {
+      streak: streaks.current,
+      avgPct,
+      gymRatio: gymRatioStr
+    };
   }
 
   // --- SCREEN 1: TODAY & 7-DAY EDITABLE LOGGING ---
@@ -1181,6 +1249,11 @@ const App = (() => {
     const dayNamesShort = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     const activeDayGym = Boolean(state.logs[dateKey] && state.logs[dateKey].gym);
 
+    const splitSlideClass = (pendingFx && pendingFx.type === 'date-step')
+      ? (pendingFx.dir > 0 ? 'fx-slide-next' : 'fx-slide-prev')
+      : '';
+    const isGymToggledForDate = pendingFx && pendingFx.type === 'gym-toggle' && pendingFx.dateKey === dateKey;
+
     return `
       <!-- Date Switcher Bar (Restricted to 7-Day Edit Window) -->
       <div class="surface-card date-nav-bar">
@@ -1196,9 +1269,9 @@ const App = (() => {
         </button>
       </div>
 
-      <div class="today-split">
+      <div class="today-split ${splitSlideClass}">
         <!-- Daily Home Exercises -->
-        <section class="surface-card card-pad">
+        <section class="surface-card card-pad ${pendingFx && pendingFx.type === 'complete-all' && pendingFx.dateKey === dateKey ? 'fx-target-met' : ''}">
           <div class="card-head">
             <div>
               <div class="section-heading">Daily Home Exercises</div>
@@ -1221,21 +1294,27 @@ const App = (() => {
               const pct = Math.min(100, Math.round((current / Math.max(1, ex.target)) * 100));
               const tone = getMetricTone(current, ex.target);
               const done = current >= ex.target;
+              const isBumpedEx = pendingFx && pendingFx.dateKey === dateKey &&
+                ((pendingFx.type === 'ex-change' && pendingFx.exId === ex.id) || pendingFx.type === 'complete-all');
+              const isTargetHitEx = pendingFx && pendingFx.dateKey === dateKey &&
+                ((pendingFx.type === 'ex-change' && pendingFx.exId === ex.id && pendingFx.hitTarget) ||
+                 (pendingFx.type === 'complete-all' && pendingFx.hitIds && pendingFx.hitIds.includes(ex.id)));
 
               return `
-                <div class="surface-inset ex-box">
+                <div class="surface-inset ex-box ${isTargetHitEx ? 'fx-target-met' : ''}" data-ex-id="${ex.id}">
                   <div class="ex-top-line">
                     <span class="ex-title">${escapeHtml(ex.name)}</span>
                     <div class="ex-input-group tabular-nums">
                       <input type="number" min="0" value="${current}"
-                             class="num-input ${tone.text} tabular-nums"
+                             data-ex-id="${ex.id}"
+                             class="num-input ${tone.text} tabular-nums ${isBumpedEx ? 'fx-val-pop' : ''}"
                              onchange="App.SetExactExercise('${dateKey}', '${ex.id}', this.value)" />
                       <span class="${tone.text}" style="font-weight:600;">/ ${ex.target} ${escapeHtml(ex.unit)}</span>
                     </div>
                   </div>
 
                   <div class="progress-rail">
-                    <div class="progress-fill ${tone.bg}" style="width:${pct}%;"></div>
+                    <div class="progress-fill ${tone.bg}" data-ex-id="${ex.id}" data-target-pct="${pct}" style="width:${pct}%;"></div>
                   </div>
 
                   <div class="increment-grid">
@@ -1268,16 +1347,20 @@ const App = (() => {
           </div>
 
           <div class="week-7-grid">
-            ${weekGym.days.map((slot, idx) => `
-              <button class="week-day-btn ${slot.visited ? 'visited' : ''} ${slot.dateKey === dateKey ? 'active-ring' : ''} ${slot.isFuture || slot.isLocked ? 'locked-day' : ''} smooth-ui"
+            ${weekGym.days.map((slot, idx) => {
+              const isSlotToggled = pendingFx && pendingFx.type === 'gym-toggle' && pendingFx.dateKey === slot.dateKey;
+              return `
+              <button class="week-day-btn ${slot.visited ? 'visited' : ''} ${slot.dateKey === dateKey ? 'active-ring' : ''} ${slot.isFuture || slot.isLocked ? 'locked-day' : ''} ${isSlotToggled ? 'fx-gym-pop' : ''} smooth-ui"
+                      data-date-key="${slot.dateKey}"
                       onclick="App.ToggleGym('${slot.dateKey}')">
                 <div>${dayNamesShort[idx]}</div>
                 <div><span class="gym-dot ${slot.visited ? 'on' : ''}"></span></div>
               </button>
-            `).join('')}
+            `;
+            }).join('')}
           </div>
 
-          <button class="gym-action-btn ${activeDayGym ? 'visited' : ''} smooth-ui"
+          <button class="gym-action-btn ${activeDayGym ? 'visited' : ''} ${isGymToggledForDate ? 'fx-gym-btn-pulse' : ''} smooth-ui"
                   onclick="App.ToggleGym('${dateKey}')">
             ${activeDayGym ? `Gym Visited (${formatShortDate(dateKey)})` : `Log Gym Visit (${formatShortDate(dateKey)})`}
           </button>
@@ -1339,6 +1422,10 @@ const App = (() => {
     const selStatus = getDayStatus(selKey);
     const selGym = Boolean(state.logs[selKey] && state.logs[selKey].gym);
     const locked = isDateLocked(selKey);
+    const calMonthClass = (pendingFx && pendingFx.type === 'cal-month')
+      ? (pendingFx.dir > 0 ? 'fx-slide-next' : 'fx-slide-prev')
+      : '';
+    const isCalSelect = pendingFx && pendingFx.type === 'cal-select' && pendingFx.dateKey === selKey;
 
     return `
       <div class="calendar-split">
@@ -1363,7 +1450,7 @@ const App = (() => {
           <div class="text-sky">GYM</div>
         </div>
 
-        <div>
+        <div class="${calMonthClass}">
           ${weeks.map(w => {
             const gs = w.gymSum;
             let wkCls = 'cal-wk-gym tabular-nums';
@@ -1379,7 +1466,10 @@ const App = (() => {
                   else if (d.status === 'red') cls += ' red';
                   else if (d.status === 'amber') cls += ' amber';
                   if (!d.inMonth) cls += ' other-month';
-                  if (d.dateKey === selKey) cls += ' selected';
+                  if (d.dateKey === selKey) {
+                    cls += ' selected';
+                    if (isCalSelect) cls += ' fx-cell-select';
+                  }
 
                   return `
                     <button class="${cls}" onclick="${d.isFuture ? '' : `App.SelectCalDate('${d.dateKey}')`}">
@@ -1419,7 +1509,7 @@ const App = (() => {
       </section>
 
       <!-- Selected-Date Inspector / Editor Below Calendar -->
-      <section class="surface-card card-pad">
+      <section class="surface-card card-pad ${isCalSelect ? 'fx-inspector-swap' : ''}">
         <div class="card-head">
           <div style="display:flex;align-items:center;gap:8px;">
             <span class="status-square ${selStatus === 'green' ? 'bg-emerald' : selStatus === 'amber' ? 'bg-amber' : 'bg-red'}"></span>
@@ -1433,7 +1523,7 @@ const App = (() => {
               <span>${selGym ? 'Gym Visited' : 'No Gym Visit'}</span>
             </span>
           ` : `
-            <button class="step-btn smooth-ui"
+            <button class="step-btn smooth-ui ${pendingFx && pendingFx.type === 'gym-toggle' && pendingFx.dateKey === selKey ? 'fx-gym-btn-pulse' : ''}"
                     style="display:inline-flex;align-items:center;gap:6px;${selGym ? 'background:rgba(14,165,233,0.2);border-color:var(--sky-400);color:var(--sky-300);' : ''}"
                     onclick="App.ToggleGym('${selKey}')">
               <span style="width:8px;height:8px;border-radius:50%;background:${selGym ? 'var(--sky-400)' : '#475569'};"></span>
@@ -1447,9 +1537,12 @@ const App = (() => {
             const val = getExerciseVal(selKey, ex.id);
             const tone = getMetricTone(val, ex.target);
             const met = val >= ex.target;
+            const isBumpedEx = pendingFx && pendingFx.dateKey === selKey &&
+              pendingFx.type === 'ex-change' && pendingFx.exId === ex.id;
+            const isTargetHitEx = isBumpedEx && pendingFx.hitTarget;
 
             return `
-              <div class="surface-inset editor-row">
+              <div class="surface-inset editor-row ${isTargetHitEx ? 'fx-target-met' : ''}">
                 <div style="min-width:0;">
                   <div class="ex-title">${escapeHtml(ex.name)}</div>
                   <div class="tabular-nums ${tone.text}" style="font-size:0.75rem;font-weight:600;">
@@ -1465,7 +1558,7 @@ const App = (() => {
                   <div class="editor-controls">
                     <button class="mini-btn tabular-nums" onclick="App.BumpExercise('${selKey}', '${ex.id}', -1)">-1</button>
                     <input type="number" min="0" value="${val}"
-                           class="num-input ${tone.text} tabular-nums"
+                           class="num-input ${tone.text} tabular-nums ${isBumpedEx ? 'fx-val-pop' : ''}"
                            style="text-align:center;"
                            onchange="App.SetExactExercise('${selKey}', '${ex.id}', this.value)" />
                     <button class="mini-btn tabular-nums" onclick="App.BumpExercise('${selKey}', '${ex.id}', 1)">+1</button>
@@ -1800,11 +1893,11 @@ const App = (() => {
 
           <line x1="${padL}" y1="${targetY}" x2="${svgW - padR}" y2="${targetY}" stroke="var(--sky-400)" stroke-width="1.4" stroke-dasharray="4 4" />
 
-          <path d="${areaD}" fill="url(#splitArea)" />
-          <path d="${d}" fill="none" stroke="var(--text-slate-300)" stroke-width="2" stroke-linecap="round" />
+          <path class="chart-area-path" d="${areaD}" fill="url(#splitArea)" />
+          <path class="chart-line-path" pathLength="100" d="${d}" fill="none" stroke="var(--text-slate-300)" stroke-width="2" stroke-linecap="round" />
 
-          ${pts.map(p => `
-            <circle cx="${p.x}" cy="${p.y}" r="${p.isCurrent ? 4.5 : 3.5}" fill="${p.hex}" stroke="var(--bg-inset)" stroke-width="1.8" />
+          ${pts.map((p, idx) => `
+            <circle class="chart-pt" style="animation-delay:${Math.min(240, idx * 35)}ms;" cx="${p.x}" cy="${p.y}" r="${p.isCurrent ? 4.5 : 3.5}" fill="${p.hex}" stroke="var(--bg-inset)" stroke-width="1.8" />
             <text x="${p.x}" y="${p.y - 8}" text-anchor="middle" fill="${p.hex}" font-size="12" font-weight="700">${p.v}</text>
             <text x="${p.x}" y="${svgH - 4}" text-anchor="middle" fill="${p.isCurrent ? '#F59E0B' : '#64748B'}" font-size="12" font-weight="600">${p.short}</text>
           `).join('')}
@@ -1826,11 +1919,11 @@ const App = (() => {
           <div style="flex:1;">
             <div style="position:relative;height:144px;display:flex;align-items:flex-end;justify-content:space-between;gap:4px;border-bottom:1px solid #1e293b;border-left:1px solid #1e293b;padding:0 6px;">
               <div style="position:absolute;left:0;right:0;bottom:${targetPct}%;border-top:1px dashed var(--sky-400);pointer-events:none;z-index:2;"></div>
-              ${series.map(s => {
+              ${series.map((s, idx) => {
                 const h = Math.max(4, Math.min(95, Math.round((s.v / maxVal) * 100)));
                 return `
                   <div style="flex:1;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;z-index:1;">
-                    <div style="width:100%;max-width:20px;height:${h}%;background:${s.hex};border-radius:2px 2px 0 0;"></div>
+                    <div class="chart-bar-fill" style="width:100%;max-width:20px;height:${h}%;background:${s.hex};border-radius:2px 2px 0 0;animation-delay:${idx * 22}ms;"></div>
                   </div>
                 `;
               }).join('')}
@@ -1864,8 +1957,9 @@ const App = (() => {
         <div class="stack-list" style="margin-bottom:12px;">
           ${state.exercises.map((ex, idx) => {
             const isConfirming = ui.confirmRemoveExId === ex.id;
+            const isMoved = pendingFx && pendingFx.type === 'goal-move' && pendingFx.exId === ex.id;
             return `
-              <div class="surface-inset editor-row">
+              <div class="surface-inset editor-row ${isMoved ? 'fx-row-move' : ''}">
                 <div style="display:flex;align-items:center;gap:6px;min-width:0;">
                   <div style="display:flex;flex-direction:column;gap:2px;">
                     <button class="mini-btn" style="padding:1px 5px;font-size:0.65rem;line-height:1;"
@@ -2313,21 +2407,63 @@ const App = (() => {
     const overlay = document.getElementById('settings-overlay');
     if (!overlay) return;
     if (!ui.settingsOpen) {
-      overlay.style.display = 'none';
-      overlay.innerHTML = '';
-      lastRenderedSettingsSection = null;
+      if (wasSettingsOpen && overlay.style.display !== 'none') {
+        wasSettingsOpen = false;
+        overlay.classList.remove('overlay-enter');
+        overlay.classList.add('overlay-exit');
+        const drawer = overlay.querySelector('.settings-drawer');
+        if (drawer) {
+          drawer.classList.remove('drawer-enter');
+          drawer.classList.add('drawer-exit');
+        }
+        if (settingsCloseTimer) clearTimeout(settingsCloseTimer);
+        settingsCloseTimer = setTimeout(() => {
+          settingsCloseTimer = null;
+          if (!ui.settingsOpen) {
+            overlay.style.display = 'none';
+            overlay.innerHTML = '';
+            overlay.classList.remove('overlay-exit');
+            lastRenderedSettingsSection = null;
+          }
+        }, 185);
+      } else {
+        wasSettingsOpen = false;
+        overlay.style.display = 'none';
+        overlay.innerHTML = '';
+        overlay.classList.remove('overlay-exit');
+        lastRenderedSettingsSection = null;
+      }
       return;
     }
+
+    if (settingsCloseTimer) {
+      clearTimeout(settingsCloseTimer);
+      settingsCloseTimer = null;
+    }
+    const isOpeningNow = !wasSettingsOpen || overlay.style.display === 'none';
+    const currentSec = ui.settingsSection || 'profile';
+    const isSectionSwitch = wasSettingsOpen && lastRenderedSettingsSection && lastRenderedSettingsSection !== currentSec;
+    wasSettingsOpen = true;
+
     const prevNav = overlay.querySelector('.settings-side-nav');
     const prevPane = overlay.querySelector('.settings-content-pane');
     const prevNavLeft = prevNav ? prevNav.scrollLeft : 0;
     const prevNavTop = prevNav ? prevNav.scrollTop : 0;
-    const sameSection = lastRenderedSettingsSection === (ui.settingsSection || 'profile');
+    const sameSection = lastRenderedSettingsSection === currentSec;
     const prevPaneTop = (sameSection && prevPane) ? prevPane.scrollTop : 0;
+
+    overlay.classList.remove('overlay-exit');
+    if (isOpeningNow) overlay.classList.add('overlay-enter');
+    else overlay.classList.remove('overlay-enter');
 
     overlay.style.display = 'flex';
     overlay.innerHTML = renderSettingsScreen();
-    lastRenderedSettingsSection = ui.settingsSection || 'profile';
+    lastRenderedSettingsSection = currentSec;
+
+    const nextDrawer = overlay.querySelector('.settings-drawer');
+    if (nextDrawer && isOpeningNow) {
+      nextDrawer.classList.add('drawer-enter');
+    }
 
     const nextNav = overlay.querySelector('.settings-side-nav');
     if (nextNav) {
@@ -2339,8 +2475,12 @@ const App = (() => {
       }
     }
     const nextPane = overlay.querySelector('.settings-content-pane');
-    if (nextPane && sameSection) {
-      nextPane.scrollTop = prevPaneTop;
+    if (nextPane) {
+      if (sameSection) {
+        nextPane.scrollTop = prevPaneTop;
+      } else if (isSectionSwitch) {
+        triggerPopClass(nextPane, 'pane-enter');
+      }
     }
   }
 
@@ -2359,6 +2499,14 @@ const App = (() => {
     const main = document.getElementById('main-view');
     if (!main) return;
 
+    const prevWidths = {};
+    if (ui.screen === 'today' && lastRenderedScreen === 'today' && lastRenderedActiveDate === ui.activeDate) {
+      main.querySelectorAll('.progress-fill[data-ex-id]').forEach(el => {
+        const id = el.getAttribute('data-ex-id');
+        if (id) prevWidths[id] = el.style.width || '0%';
+      });
+    }
+
     if (ui.screen === 'calendar') main.innerHTML = renderCalendarScreen();
     else if (ui.screen === 'charts') main.innerHTML = renderChartsScreen();
     else if (ui.screen === 'goals') main.innerHTML = renderGoalsScreen();
@@ -2366,6 +2514,46 @@ const App = (() => {
       ui.screen = 'today';
       main.innerHTML = renderTodayScreen();
     }
+
+    if (ui.screen !== lastRenderedScreen) {
+      const tabOrder = ['today', 'calendar', 'charts', 'goals'];
+      const prevIdx = tabOrder.indexOf(lastRenderedScreen);
+      const nextIdx = tabOrder.indexOf(ui.screen);
+      main.classList.remove('fx-screen-right', 'fx-screen-left');
+      void main.offsetWidth;
+      main.classList.add(nextIdx >= prevIdx ? 'fx-screen-right' : 'fx-screen-left');
+    } else {
+      main.classList.remove('fx-screen-right', 'fx-screen-left');
+    }
+
+    if (Object.keys(prevWidths).length > 0) {
+      const fills = main.querySelectorAll('.progress-fill[data-ex-id]');
+      const animateList = [];
+      fills.forEach(el => {
+        const id = el.getAttribute('data-ex-id');
+        const targetPct = el.getAttribute('data-target-pct');
+        if (id && prevWidths[id] !== undefined && targetPct !== null) {
+          const oldW = prevWidths[id];
+          const newW = `${targetPct}%`;
+          if (oldW !== newW) {
+            el.style.transition = 'none';
+            el.style.width = oldW;
+            animateList.push({ el, newW });
+          }
+        }
+      });
+      if (animateList.length > 0) {
+        void main.offsetWidth;
+        animateList.forEach(({ el, newW }) => {
+          el.style.transition = '';
+          el.style.width = newW;
+        });
+      }
+    }
+
+    lastRenderedScreen = ui.screen;
+    lastRenderedActiveDate = ui.activeDate;
+    pendingFx = null;
 
     ['today', 'calendar', 'charts', 'goals'].forEach(s => {
       const btn = document.getElementById('dock-' + s);
@@ -2392,7 +2580,7 @@ const App = (() => {
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=13').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=14').then((reg) => {
         if (reg && reg.update) reg.update();
       }).catch(() => {});
     });
@@ -2485,10 +2673,12 @@ const App = (() => {
       const next = addDays(ui.activeDate, delta);
       if (next >= oldest && next <= today) {
         ui.activeDate = next;
+        pendingFx = { type: 'date-step', dir: delta };
         render();
       }
     },
     JumpToToday() {
+      pendingFx = { type: 'date-step', dir: 1 };
       ui.activeDate = toDateKey();
       render();
     },
@@ -2498,12 +2688,15 @@ const App = (() => {
         return;
       }
       const log = getDayLog(dateKey);
+      const hitIds = [];
       state.exercises.forEach(ex => {
         const cur = Number(log.exercises[ex.id]) || 0;
         if (cur < ex.target) {
           log.exercises[ex.id] = ex.target;
+          hitIds.push(ex.id);
         }
       });
+      pendingFx = { type: 'complete-all', dateKey, hitIds };
       saveState(true);
       showToast(`All ${state.exercises.length} daily targets marked complete`);
     },
@@ -2513,7 +2706,12 @@ const App = (() => {
         return;
       }
       const log = getDayLog(dateKey);
-      log.exercises[exId] = Math.max(0, (Number(log.exercises[exId]) || 0) + delta);
+      const prevVal = Number(log.exercises[exId]) || 0;
+      const nextVal = Math.max(0, prevVal + delta);
+      log.exercises[exId] = nextVal;
+      const exObj = state.exercises.find(e => e.id === exId);
+      const hitTarget = Boolean(exObj && prevVal < exObj.target && nextVal >= exObj.target);
+      pendingFx = { type: 'ex-change', exId, dateKey, hitTarget };
       saveState(true);
     },
     SetExactExercise(dateKey, exId, val) {
@@ -2522,7 +2720,12 @@ const App = (() => {
         return;
       }
       const log = getDayLog(dateKey);
-      log.exercises[exId] = Math.max(0, Number(val) || 0);
+      const prevVal = Number(log.exercises[exId]) || 0;
+      const nextVal = Math.max(0, Number(val) || 0);
+      log.exercises[exId] = nextVal;
+      const exObj = state.exercises.find(e => e.id === exId);
+      const hitTarget = Boolean(exObj && prevVal < exObj.target && nextVal >= exObj.target);
+      pendingFx = { type: 'ex-change', exId, dateKey, hitTarget };
       saveState(true);
     },
     ToggleGym(dateKey) {
@@ -2532,12 +2735,14 @@ const App = (() => {
       }
       const log = getDayLog(dateKey);
       log.gym = !log.gym;
+      pendingFx = { type: 'gym-toggle', dateKey };
       saveState(true);
     },
     StepCalMonth(delta) {
       const d = new Date(ui.calYear, ui.calMonth + delta, 1);
       ui.calYear = d.getFullYear();
       ui.calMonth = d.getMonth();
+      pendingFx = { type: 'cal-month', dir: delta };
       render();
     },
     JumpCalToToday() {
@@ -2545,11 +2750,13 @@ const App = (() => {
       ui.calYear = now.getFullYear();
       ui.calMonth = now.getMonth();
       ui.selectedCalDate = toDateKey(now);
+      pendingFx = { type: 'cal-select', dateKey: ui.selectedCalDate };
       render();
     },
     SelectCalDate(dateKey) {
       if (dateKey <= toDateKey()) {
         ui.selectedCalDate = dateKey;
+        pendingFx = { type: 'cal-select', dateKey };
         render();
       }
     },
@@ -2589,6 +2796,7 @@ const App = (() => {
       copy.splice(nextIdx, 0, moved);
       state.exercises = copy;
       ui.confirmRemoveExId = null;
+      pendingFx = { type: 'goal-move', exId: id };
       saveState(true);
     },
     AddExercise() {
@@ -2605,6 +2813,7 @@ const App = (() => {
       const id = 'ex_' + Date.now();
       state.exercises.push({ id, name, target, unit });
       ui.confirmRemoveExId = null;
+      pendingFx = { type: 'goal-move', exId: id };
       saveState(true);
       showToast(`Added ${name} (${target} ${unit})`);
     },
@@ -2767,6 +2976,8 @@ const App = (() => {
         renderAuthGate();
         showToast('Session unlocked');
       } else {
+        const card = document.querySelector('#auth-gate-overlay .auth-gate-card');
+        triggerPopClass(card, 'fx-shake');
         showToast('Incorrect Passkey / PIN');
       }
     },
