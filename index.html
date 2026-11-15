@@ -11,11 +11,11 @@
   <link rel="manifest" href="./manifest.json" />
   <link rel="icon" type="image/svg+xml" href="./icon.svg" />
   <link rel="apple-touch-icon" href="./icon.svg" />
-  <link rel="stylesheet" href="./styles.css?v=9" />
+  <link rel="stylesheet" href="./styles.css?v=10" />
 </head>
 <body>
   <div class="app-shell">
-    <div>
+    <div class="workspace-col">
       <!-- Top Header + Dual Metric Strip -->
       <header class="top-chrome">
         <div class="top-bar-row">
@@ -35,7 +35,7 @@
                 <path d="M8 11V7a4 4 0 0 1 8 0v4"></path>
               </svg>
             </button>
-            <button id="hdr-profile-btn" class="profile-hdr-btn smooth-ui" onclick="App.SetScreen('settings')" title="Profile &amp; Settings">
+            <button id="hdr-profile-btn" class="profile-hdr-btn smooth-ui" onclick="App.ToggleSettings()" title="Profile &amp; Settings">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square">
                 <path d="M20 21v-2a4 4 0 0 0-3-3.87"></path>
                 <path d="M4 21v-2a4 4 0 0 1 3-3.87"></path>
@@ -83,9 +83,13 @@
       <main id="main-view" class="main-body"></main>
     </div>
 
-    <!-- App-Wide Unobtrusive Legend Footer + Bottom Navigation -->
-    <div class="bottom-fixed-zone">
+    <!-- Navigation Zone: Bottom Bar on Mobile, Left Sidebar on Desktop/Web -->
+    <aside class="bottom-fixed-zone">
       <div class="bottom-fixed-inner">
+        <div class="sidebar-nav-header">
+          <div class="sidebar-nav-title">Workspace</div>
+        </div>
+
         <div class="legend-footer">
           <div class="legend-group">
             <span class="legend-item"><span class="status-square bg-emerald" style="width:8px;height:8px;"></span>Met</span>
@@ -132,14 +136,17 @@
           </button>
         </nav>
       </div>
-    </div>
+    </aside>
   </div>
+
+  <!-- Slide-Over Profile & Settings Overlay Panel -->
+  <div id="settings-overlay" class="settings-overlay" style="display:none;" onclick="if(event.target===this) App.CloseSettings()"></div>
 
   <!-- Full-Screen Passkey / PIN Authentication Gate -->
   <div id="auth-gate-overlay" class="auth-gate-overlay" style="display:none;"></div>
 
   <div id="toast-banner" class="toast-banner">Saved</div>
 
-  <script src="./app.js?v=9"></script>
+  <script src="./app.js?v=10"></script>
 </body>
 </html>

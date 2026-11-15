@@ -244,6 +244,7 @@ const App = (() => {
     chartPeriod: 'daily', // 'daily' | 'weekly' | 'monthly' | 'all'
     chartStyle: 'area',  // 'area' (default) | 'bar'
     syncStatus: isCloudConfigured(state) ? 'synced' : 'local',
+    settingsOpen: false,
     showResetConfirm: false,
     confirmRemoveExId: null,
     deferredInstallPrompt: null
@@ -577,7 +578,7 @@ const App = (() => {
     const profBtn = document.getElementById('hdr-profile-btn');
     const profLbl = document.getElementById('hdr-profile-label');
     if (profBtn) {
-      profBtn.className = `profile-hdr-btn smooth-ui ${ui.screen === 'settings' ? 'active' : ''}`;
+      profBtn.className = `profile-hdr-btn smooth-ui ${ui.settingsOpen ? 'active' : ''}`;
     }
     if (profLbl) {
       profLbl.textContent = (state.profileName && state.profileName.trim()) ? state.profileName.trim() : 'Profile';
@@ -668,7 +669,7 @@ const App = (() => {
     captureSettingsInputsIntoState();
     if (!isCloudConfigured(state)) {
       if (manual) {
-        ui.screen = 'settings';
+        ui.settingsOpen = true;
         render();
         showToast(state.syncProvider === 'gdrive'
           ? 'Enter both your Passkey and Google Drive Script URL first'
@@ -1193,6 +1194,7 @@ const App = (() => {
     const locked = isDateLocked(selKey);
 
     return `
+      <div class="calendar-split">
       <!-- Calendar Grid Card -->
       <section class="surface-card card-pad">
         <div class="card-head">
@@ -1333,6 +1335,7 @@ const App = (() => {
           }).join('')}
         </div>
       </section>
+      </div>
     `;
   }
 
@@ -1478,6 +1481,7 @@ const App = (() => {
     }
 
     return `
+      <div class="charts-split">
       <!-- Exercise Volume Chart Card -->
       <section class="surface-card card-pad">
         <!-- Row 1: Scalable Exercise Dropdown + Curve/Bars Toggle -->
@@ -1545,6 +1549,7 @@ const App = (() => {
         </div>
       </section>
 
+      <div class="charts-side-stack">
       <!-- All Exercises — Today Snapshot -->
       <section class="surface-card card-pad">
         <div class="card-head">
@@ -1593,6 +1598,8 @@ const App = (() => {
           }).join('')}
         </div>
       </section>
+      </div>
+      </div>
     `;
   }
 
@@ -1697,6 +1704,7 @@ const App = (() => {
   // --- SCREEN 4: GOALS (STRICTLY FITNESS TARGETS) ---
   function renderGoalsScreen() {
     return `
+      <div class="goals-split">
       <!-- 1. Daily Home Exercise Targets -->
       <section class="surface-card card-pad">
         <div class="card-head">
@@ -1780,10 +1788,11 @@ const App = (() => {
           `).join('')}
         </div>
       </section>
+      </div>
     `;
   }
 
-  // --- SCREEN 5: PROFILE & SETTINGS (OPENED FROM TOP-RIGHT HEADER) ---
+  // --- PROFILE & SETTINGS OVERLAY PANEL (OPENED FROM TOP-RIGHT HEADER) ---
   function renderSettingsScreen() {
     const cloudReady = isCloudConfigured(state);
     const hasPasskey = Boolean(state.syncPasskey && state.syncPasskey.trim());
@@ -1801,23 +1810,30 @@ const App = (() => {
       : 'Not synced yet';
 
     return `
-      <!-- 0. Athlete Profile & Lifetime Overview -->
-      <section class="surface-card card-pad">
-        <div class="card-head">
+      <div class="settings-drawer" onclick="event.stopPropagation()">
+        <div class="settings-drawer-header">
           <div>
-            <div class="section-heading">Athlete Profile &amp; Account</div>
-            <div class="section-sub tabular-nums">Tracking since ${formatMonthDayYear(state.trackingStartDate || toDateKey())}</div>
+            <div class="brand-name" style="font-size:0.82rem;">PROFILE &amp; SETTINGS</div>
+            <div class="section-sub">Account, Display, Notifications, Cloud Sync &amp; Security</div>
           </div>
-          <div style="display:flex;align-items:center;gap:6px;">
-            ${ui.deferredInstallPrompt ? `
-              <button class="step-btn smooth-ui" style="color:var(--emerald-400);border-color:rgba(16,185,129,0.45);"
-                      onclick="App.PromptInstallApp()">
-                Install App
-              </button>
-            ` : ''}
-            <button class="step-btn smooth-ui" onclick="App.SetScreen('today')">&larr; Back to Today</button>
-          </div>
+          <button class="step-btn smooth-ui" onclick="App.CloseSettings()">&#10005; Close</button>
         </div>
+
+        <div class="settings-drawer-body">
+          <!-- 0. Athlete Profile & Lifetime Overview -->
+          <section class="surface-card card-pad">
+            <div class="card-head">
+              <div>
+                <div class="section-heading">Athlete Profile &amp; Account</div>
+                <div class="section-sub tabular-nums">Tracking since ${formatMonthDayYear(state.trackingStartDate || toDateKey())}</div>
+              </div>
+              ${ui.deferredInstallPrompt ? `
+                <button class="step-btn smooth-ui" style="color:var(--emerald-400);border-color:rgba(16,185,129,0.45);"
+                        onclick="App.PromptInstallApp()">
+                  Install App
+                </button>
+              ` : ''}
+            </div>
 
         <div style="display:flex;flex-wrap:wrap;gap:6px;">
           <input id="profile-name-input" type="text" class="text-input" style="flex:1;min-width:160px;"
@@ -2029,7 +2045,21 @@ const App = (() => {
           </div>
         ` : ''}
       </section>
+        </div>
+      </div>
     `;
+  }
+
+  function renderSettingsOverlay() {
+    const overlay = document.getElementById('settings-overlay');
+    if (!overlay) return;
+    if (!ui.settingsOpen) {
+      overlay.style.display = 'none';
+      overlay.innerHTML = '';
+      return;
+    }
+    overlay.style.display = 'flex';
+    overlay.innerHTML = renderSettingsScreen();
   }
 
   function escapeHtml(str) {
@@ -2043,14 +2073,17 @@ const App = (() => {
   function render() {
     renderHeader();
     renderAuthGate();
+    renderSettingsOverlay();
     const main = document.getElementById('main-view');
     if (!main) return;
 
-    if (ui.screen === 'today') main.innerHTML = renderTodayScreen();
-    else if (ui.screen === 'calendar') main.innerHTML = renderCalendarScreen();
+    if (ui.screen === 'calendar') main.innerHTML = renderCalendarScreen();
     else if (ui.screen === 'charts') main.innerHTML = renderChartsScreen();
     else if (ui.screen === 'goals') main.innerHTML = renderGoalsScreen();
-    else main.innerHTML = renderSettingsScreen();
+    else {
+      ui.screen = 'today';
+      main.innerHTML = renderTodayScreen();
+    }
 
     ['today', 'calendar', 'charts', 'goals'].forEach(s => {
       const btn = document.getElementById('dock-' + s);
@@ -2060,15 +2093,23 @@ const App = (() => {
     });
   }
 
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && ui.settingsOpen) {
+      ui.settingsOpen = false;
+      ui.showResetConfirm = false;
+      render();
+    }
+  });
+
   window.addEventListener('beforeinstallprompt', (e) => {
     e.preventDefault();
     ui.deferredInstallPrompt = e;
-    if (ui.screen === 'settings') render();
+    if (ui.settingsOpen) render();
   });
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=9').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=10').then((reg) => {
         if (reg && reg.update) reg.update();
       }).catch(() => {});
     });
@@ -2114,9 +2155,29 @@ const App = (() => {
 
   return {
     SetScreen(scr) {
-      ui.screen = scr;
+      if (scr === 'settings') {
+        ui.settingsOpen = true;
+      } else {
+        ui.screen = scr;
+        ui.settingsOpen = false;
+      }
       ui.showResetConfirm = false;
       ui.confirmRemoveExId = null;
+      render();
+    },
+    OpenSettings() {
+      ui.settingsOpen = true;
+      ui.showResetConfirm = false;
+      render();
+    },
+    CloseSettings() {
+      ui.settingsOpen = false;
+      ui.showResetConfirm = false;
+      render();
+    },
+    ToggleSettings() {
+      ui.settingsOpen = !ui.settingsOpen;
+      ui.showResetConfirm = false;
       render();
     },
     StepActiveDate(delta) {
@@ -2387,7 +2448,7 @@ const App = (() => {
         sessionStorage.removeItem(SESSION_UNLOCK_KEY);
         renderAuthGate();
       } else {
-        ui.screen = 'settings';
+        ui.settingsOpen = true;
         render();
         showToast('Set your Secret Passkey in Profile & Settings');
       }
@@ -2442,7 +2503,7 @@ const App = (() => {
       if (isCloudConfigured(state)) {
         pushToCloud(true);
       } else {
-        ui.screen = 'settings';
+        ui.settingsOpen = true;
         render();
         showToast('Configure Authenticated Cloud Sync below');
       }
