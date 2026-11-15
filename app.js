@@ -245,6 +245,7 @@ const App = (() => {
     chartStyle: 'area',  // 'area' (default) | 'bar'
     syncStatus: isCloudConfigured(state) ? 'synced' : 'local',
     showResetConfirm: false,
+    confirmRemoveExId: null,
     deferredInstallPrompt: null
   };
 
@@ -339,11 +340,9 @@ const App = (() => {
     const today = toDateKey();
     if (dateKey > today) return 'future';
     if (isDayHomeMet(dateKey)) return 'green';
-    if (dateKey === today) {
-      return hasAnyExerciseProgress(dateKey) ? 'amber' : 'red';
-    }
-    const hasLog = hasAnyExerciseProgress(dateKey) || Boolean(state.logs[dateKey] && state.logs[dateKey].gym);
-    if (dateKey >= state.trackingStartDate || hasLog) {
+    if (hasAnyExerciseProgress(dateKey)) return 'amber';
+    const hasGym = Boolean(state.logs[dateKey] && state.logs[dateKey].gym);
+    if (dateKey === today || dateKey >= state.trackingStartDate || hasGym) {
       return 'red';
     }
     return 'none';
@@ -396,7 +395,7 @@ const App = (() => {
     let status = 'red';
     if (mondayKey > currentMon) status = 'future';
     else if (met) status = 'green';
-    else if (mondayKey === currentMon && count > 0) status = 'amber';
+    else if (count > 0) status = 'amber';
     else if (addDays(mondayKey, 6) < state.trackingStartDate && count === 0) status = 'none';
     return { mondayKey, count, target, met, status, isCurrent: mondayKey === currentMon, days };
   }
@@ -1057,7 +1056,15 @@ const App = (() => {
               <div class="section-heading">Daily Home Exercises</div>
               <div class="section-sub tabular-nums">${metCount} of ${state.exercises.length} targets complete</div>
             </div>
-            <span class="status-square ${dayStatus === 'green' ? 'bg-emerald' : dayStatus === 'amber' ? 'bg-amber' : 'bg-red'}"></span>
+            <div style="display:flex;align-items:center;gap:8px;">
+              ${metCount < state.exercises.length ? `
+                <button class="step-btn smooth-ui" style="color:var(--emerald-400);border-color:rgba(16,185,129,0.4);"
+                        onclick="App.CompleteAllForDate('${dateKey}')">
+                  Complete All
+                </button>
+              ` : ''}
+              <span class="status-square ${dayStatus === 'green' ? 'bg-emerald' : dayStatus === 'amber' ? 'bg-amber' : 'bg-red'}"></span>
+            </div>
           </div>
 
           <div class="stack-list">
@@ -1133,13 +1140,21 @@ const App = (() => {
 
   // --- SCREEN 2: CALENDAR + 7-DAY EDIT LOCK INSPECTOR ---
   function renderCalendarScreen() {
+    const today = toDateKey();
+    const nowDt = parseDateKey(today);
     const year = ui.calYear;
     const month = ui.calMonth;
+    const isCurrentMonth = year === nowDt.getFullYear() && month === nowDt.getMonth();
     const firstOfMonth = new Date(year, month, 1, 12, 0, 0);
     const monthTitle = firstOfMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
     const startMon = getMondayKey(toDateKey(firstOfMonth));
     const lastOfMonth = new Date(year, month + 1, 0, 12, 0, 0);
     const lastKey = toDateKey(lastOfMonth);
+
+    let monthMetDays = 0;
+    let monthAmberDays = 0;
+    let monthRedDays = 0;
+    let monthGymVisits = 0;
 
     const weeks = [];
     let cursorMon = startMon;
@@ -1149,13 +1164,22 @@ const App = (() => {
       for (let d = 0; d < 7; d++) {
         const k = addDays(cursorMon, d);
         const dt = parseDateKey(k);
+        const inMonth = dt.getMonth() === month;
+        const st = getDayStatus(k);
+        const gym = Boolean(state.logs[k] && state.logs[k].gym);
+        if (inMonth && k <= today) {
+          if (st === 'green') monthMetDays++;
+          else if (st === 'amber') monthAmberDays++;
+          else if (st === 'red') monthRedDays++;
+          if (gym) monthGymVisits++;
+        }
         days.push({
           dateKey: k,
           dayNum: dt.getDate(),
-          inMonth: dt.getMonth() === month,
-          status: getDayStatus(k),
-          gym: Boolean(state.logs[k] && state.logs[k].gym),
-          isFuture: k > toDateKey()
+          inMonth,
+          status: st,
+          gym,
+          isFuture: k > today
         });
       }
       weeks.push({ mondayKey: cursorMon, gymSum, days });
@@ -1177,6 +1201,9 @@ const App = (() => {
             <div class="section-sub">Entries older than 7 days are locked (read-only)</div>
           </div>
           <div style="display:flex;align-items:center;gap:4px;">
+            ${(!isCurrentMonth || selKey !== today) ? `
+              <button class="jump-today-btn" onclick="App.JumpCalToToday()">Today</button>
+            ` : ''}
             <button class="step-btn" onclick="App.StepCalMonth(-1)">&larr;</button>
             <button class="step-btn" onclick="App.StepCalMonth(1)">&rarr;</button>
           </div>
@@ -1219,6 +1246,26 @@ const App = (() => {
               </div>
             `;
           }).join('')}
+        </div>
+
+        <!-- Monthly Accountability Rollup Strip -->
+        <div style="display:grid;grid-template-columns:repeat(4, 1fr);gap:6px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border-card);">
+          <div class="surface-inset" style="padding:6px 4px;text-align:center;">
+            <div style="font-size:0.65rem;color:var(--text-slate-500);text-transform:uppercase;">Met Days</div>
+            <div class="tabular-nums text-emerald" style="font-size:0.85rem;font-weight:700;margin-top:1px;">${monthMetDays}d</div>
+          </div>
+          <div class="surface-inset" style="padding:6px 4px;text-align:center;">
+            <div style="font-size:0.65rem;color:var(--text-slate-500);text-transform:uppercase;">Incomplete</div>
+            <div class="tabular-nums text-amber" style="font-size:0.85rem;font-weight:700;margin-top:1px;">${monthAmberDays}d</div>
+          </div>
+          <div class="surface-inset" style="padding:6px 4px;text-align:center;">
+            <div style="font-size:0.65rem;color:var(--text-slate-500);text-transform:uppercase;">Missed (0)</div>
+            <div class="tabular-nums text-red" style="font-size:0.85rem;font-weight:700;margin-top:1px;">${monthRedDays}d</div>
+          </div>
+          <div class="surface-inset" style="padding:6px 4px;text-align:center;">
+            <div style="font-size:0.65rem;color:var(--text-slate-500);text-transform:uppercase;">Gym Visits</div>
+            <div class="tabular-nums text-sky" style="font-size:0.85rem;font-weight:700;margin-top:1px;">${monthGymVisits}d</div>
+          </div>
         </div>
       </section>
 
@@ -1302,7 +1349,7 @@ const App = (() => {
         const isCurrent = i === 0;
         let hex = '#EF4444';
         if (v >= ex.target) hex = '#10B981';
-        else if (isCurrent && v > 0) hex = '#F59E0B';
+        else if (v > 0) hex = '#F59E0B';
         points.push({
           short: isCurrent ? 'Tdy' : String(dt.getDate()),
           v,
@@ -1332,7 +1379,7 @@ const App = (() => {
         const isCurrent = w === 0;
         let hex = '#EF4444';
         if (v >= ex.target) hex = '#10B981';
-        else if (isCurrent && v > 0) hex = '#F59E0B';
+        else if (v > 0) hex = '#F59E0B';
         points.push({ short: `W${wkNum}`, v, isCurrent, hex });
       }
       return { subtitle: 'Weekly daily-avg vs. daily target', points };
@@ -1360,7 +1407,7 @@ const App = (() => {
         const isCurrent = m === 0;
         let hex = '#EF4444';
         if (v >= ex.target) hex = '#10B981';
-        else if (isCurrent && v > 0) hex = '#F59E0B';
+        else if (v > 0) hex = '#F59E0B';
         points.push({ short, v, isCurrent, hex });
       }
       return { subtitle: 'Monthly daily-avg vs. daily target', points };
@@ -1389,7 +1436,7 @@ const App = (() => {
       const short = dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
       let hex = '#EF4444';
       if (v >= ex.target) hex = '#10B981';
-      else if (isCurrent && v > 0) hex = '#F59E0B';
+      else if (v > 0) hex = '#F59E0B';
       points.push({ short, v, isCurrent, hex });
     }
     return { subtitle: 'All-time progression vs. daily target', points };
@@ -1402,8 +1449,19 @@ const App = (() => {
 
     const maxVal = Math.ceil(Math.max(activeEx.target * 1.25, ...series.map(s => s.v), 10) / 10) * 10;
     const hitCount = series.filter(s => s.v >= activeEx.target).length;
+    const hitRatePct = Math.round((hitCount / Math.max(1, series.length)) * 100);
+    const periodAvg = Math.round(series.reduce((acc, s) => acc + s.v, 0) / Math.max(1, series.length));
+    const avgTone = getMetricTone(periodAvg, activeEx.target);
     const latestVal = series[series.length - 1].v;
     const latestTone = getMetricTone(latestVal, activeEx.target);
+
+    // Compute All-Time Daily PR for activeEx
+    let allTimePR = 0;
+    Object.keys(state.logs || {}).forEach(k => {
+      const val = getExerciseVal(k, activeEx.id);
+      if (val > allTimePR) allTimePR = val;
+    });
+    const prTone = getMetricTone(allTimePR, activeEx.target);
 
     const today = toDateKey();
     const curMon = getMondayKey(today);
@@ -1469,6 +1527,22 @@ const App = (() => {
           ? renderSvgCurve(series, maxVal, activeEx.target)
           : renderBarsPlot(series, maxVal, activeEx.target)
         }
+
+        <!-- Row 4: Period Avg • All-Time PR • Hit Rate Summary -->
+        <div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:6px;margin-top:10px;">
+          <div class="surface-inset" style="padding:6px 4px;text-align:center;">
+            <div style="font-size:0.65rem;color:var(--text-slate-500);text-transform:uppercase;">Period Avg</div>
+            <div class="tabular-nums ${avgTone.text}" style="font-size:0.85rem;font-weight:700;margin-top:1px;">${periodAvg} ${escapeHtml(activeEx.unit)}</div>
+          </div>
+          <div class="surface-inset" style="padding:6px 4px;text-align:center;">
+            <div style="font-size:0.65rem;color:var(--text-slate-500);text-transform:uppercase;">All-Time PR</div>
+            <div class="tabular-nums ${prTone.text}" style="font-size:0.85rem;font-weight:700;margin-top:1px;">${allTimePR} ${escapeHtml(activeEx.unit)}</div>
+          </div>
+          <div class="surface-inset" style="padding:6px 4px;text-align:center;">
+            <div style="font-size:0.65rem;color:var(--text-slate-500);text-transform:uppercase;">Hit Rate</div>
+            <div class="tabular-nums ${hitRatePct >= 80 ? 'text-emerald' : hitRatePct > 0 ? 'text-amber' : 'text-red'}" style="font-size:0.85rem;font-weight:700;margin-top:1px;">${hitRatePct}%</div>
+          </div>
+        </div>
       </section>
 
       <!-- All Exercises — Today Snapshot -->
@@ -1508,7 +1582,7 @@ const App = (() => {
             const met = wk.c >= wk.t;
             let cls = 'gym-wk-box tabular-nums ';
             if (met) cls += 'green';
-            else if (wk.current && wk.c > 0) cls += 'amber';
+            else if (wk.c > 0) cls += 'amber';
             else cls += 'red';
             return `
               <div class="${cls}">
@@ -1628,31 +1702,53 @@ const App = (() => {
         <div class="card-head">
           <div>
             <div class="section-heading">Daily Home Exercise Targets</div>
-            <div class="section-sub">Edit daily targets or add new exercises (${state.exercises.length} configured)</div>
+            <div class="section-sub">Edit daily targets, reorder, or add new exercises (${state.exercises.length} configured)</div>
           </div>
         </div>
 
         <div class="stack-list" style="margin-bottom:12px;">
-          ${state.exercises.map(ex => `
-            <div class="surface-inset editor-row">
-              <span class="ex-title">${escapeHtml(ex.name)}</span>
-              <div class="editor-controls">
-                <input type="number" min="1" value="${ex.target}"
-                       class="num-input text-emerald tabular-nums"
-                       style="width:64px;padding:4px 8px;"
-                       onchange="App.UpdateTarget('${ex.id}', this.value)" />
-                <span class="text-muted" style="font-size:0.75rem;width:32px;">${escapeHtml(ex.unit)}</span>
-                <button class="mini-btn" style="color:var(--text-slate-500);" onclick="App.RemoveExercise('${ex.id}')">Remove</button>
+          ${state.exercises.map((ex, idx) => {
+            const isConfirming = ui.confirmRemoveExId === ex.id;
+            return `
+              <div class="surface-inset editor-row">
+                <div style="display:flex;align-items:center;gap:6px;min-width:0;">
+                  <div style="display:flex;flex-direction:column;gap:2px;">
+                    <button class="mini-btn" style="padding:1px 5px;font-size:0.65rem;line-height:1;"
+                            ${idx === 0 ? 'disabled' : ''}
+                            onclick="App.MoveExercise('${ex.id}', -1)" title="Move Up">&uarr;</button>
+                    <button class="mini-btn" style="padding:1px 5px;font-size:0.65rem;line-height:1;"
+                            ${idx === state.exercises.length - 1 ? 'disabled' : ''}
+                            onclick="App.MoveExercise('${ex.id}', 1)" title="Move Down">&darr;</button>
+                  </div>
+                  <span class="ex-title" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(ex.name)}</span>
+                </div>
+                <div class="editor-controls">
+                  <input type="number" min="1" value="${ex.target}"
+                         class="num-input text-emerald tabular-nums"
+                         style="width:64px;padding:4px 8px;"
+                         onchange="App.UpdateTarget('${ex.id}', this.value)" />
+                  <span class="text-muted" style="font-size:0.75rem;width:32px;">${escapeHtml(ex.unit)}</span>
+                  ${isConfirming ? `
+                    <button class="mini-btn" style="color:var(--red-400);border-color:rgba(239,68,68,0.5);font-weight:700;"
+                            onclick="App.RemoveExercise('${ex.id}')">Confirm?</button>
+                  ` : `
+                    <button class="mini-btn" style="color:var(--text-slate-500);"
+                            onclick="App.RemoveExercise('${ex.id}')">Remove</button>
+                  `}
+                </div>
               </div>
-            </div>
-          `).join('')}
+            `;
+          }).join('')}
         </div>
 
         <div class="surface-inset" style="padding:10px;">
           <div style="font-size:0.75rem;font-weight:600;color:var(--text-slate-300);margin-bottom:8px;">Add Exercise</div>
           <div style="display:flex;flex-wrap:wrap;gap:6px;">
-            <input id="new-ex-name" type="text" class="text-input" style="flex:1;min-width:130px;" placeholder="Exercise name (e.g. Pull-ups)" />
-            <input id="new-ex-target" type="number" min="1" value="30" class="text-input tabular-nums" style="width:64px;font-weight:700;" />
+            <input id="new-ex-name" type="text" class="text-input" style="flex:1;min-width:130px;"
+                   placeholder="Exercise name (e.g. Pull-ups)"
+                   onkeydown="if(event.key==='Enter') App.AddExercise()" />
+            <input id="new-ex-target" type="number" min="1" value="30" class="text-input tabular-nums" style="width:64px;font-weight:700;"
+                   onkeydown="if(event.key==='Enter') App.AddExercise()" />
             <select id="new-ex-unit" class="text-input">
               <option value="reps">reps</option>
               <option value="sec">sec</option>
@@ -1695,6 +1791,14 @@ const App = (() => {
     const totalDaysLogged = logKeys.length;
     const totalGymVisits = logKeys.filter(k => state.logs[k] && state.logs[k].gym).length;
     const streaks = computeHomeStreaks();
+    const lastSyncText = state.lastSyncedAt
+      ? new Date(state.lastSyncedAt).toLocaleString('en-US', {
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        })
+      : 'Not synced yet';
 
     return `
       <!-- 0. Athlete Profile & Lifetime Overview -->
@@ -1704,13 +1808,22 @@ const App = (() => {
             <div class="section-heading">Athlete Profile &amp; Account</div>
             <div class="section-sub tabular-nums">Tracking since ${formatMonthDayYear(state.trackingStartDate || toDateKey())}</div>
           </div>
-          <button class="step-btn smooth-ui" onclick="App.SetScreen('today')">&larr; Back to Today</button>
+          <div style="display:flex;align-items:center;gap:6px;">
+            ${ui.deferredInstallPrompt ? `
+              <button class="step-btn smooth-ui" style="color:var(--emerald-400);border-color:rgba(16,185,129,0.45);"
+                      onclick="App.PromptInstallApp()">
+                Install App
+              </button>
+            ` : ''}
+            <button class="step-btn smooth-ui" onclick="App.SetScreen('today')">&larr; Back to Today</button>
+          </div>
         </div>
 
         <div style="display:flex;flex-wrap:wrap;gap:6px;">
           <input id="profile-name-input" type="text" class="text-input" style="flex:1;min-width:160px;"
                  placeholder="Display Name / Handle"
-                 value="${escapeHtml(state.profileName || 'Kingsley')}" />
+                 value="${escapeHtml(state.profileName || 'Kingsley')}"
+                 onkeydown="if(event.key==='Enter') App.SaveProfileName()" />
           <button class="primary-btn smooth-ui" onclick="App.SaveProfileName()">Update Profile</button>
         </div>
 
@@ -1811,7 +1924,7 @@ const App = (() => {
         <div class="card-head">
           <div>
             <div class="section-heading">Authenticated Cloud Sync</div>
-            <div class="section-sub">Choose Zero-"Anyone" Private GitHub Gist or Passkey-Protected Drive</div>
+            <div class="section-sub tabular-nums">Last Synced: ${escapeHtml(lastSyncText)}</div>
           </div>
           <span class="${cloudReady ? 'text-emerald' : 'text-muted'}" style="font-size:0.75rem;font-weight:600;">
             ${cloudReady ? (state.syncProvider === 'gist' ? 'Private Gist Ready' : 'Drive Auth Ready') : 'Local Only'}
@@ -1950,14 +2063,21 @@ const App = (() => {
   window.addEventListener('beforeinstallprompt', (e) => {
     e.preventDefault();
     ui.deferredInstallPrompt = e;
+    if (ui.screen === 'settings') render();
   });
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=7').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=8').then((reg) => {
         if (reg && reg.update) reg.update();
       }).catch(() => {});
     });
+  }
+
+  function isUserTypingInInput() {
+    const active = document.activeElement;
+    if (!active || !active.tagName) return false;
+    return ['INPUT', 'SELECT', 'TEXTAREA'].includes(active.tagName.toUpperCase());
   }
 
   window.addEventListener('DOMContentLoaded', () => {
@@ -1971,7 +2091,7 @@ const App = (() => {
   // Automatically sync across PC & Phone whenever tab/app gains focus or every 10s
   window.addEventListener('focus', () => {
     checkScheduledReminders();
-    if (isCloudConfigured(state)) {
+    if (isCloudConfigured(state) && !isUserTypingInInput()) {
       pullFromCloud({ silent: true, onlyIfNewer: true });
     }
   });
@@ -1979,7 +2099,7 @@ const App = (() => {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
       checkScheduledReminders();
-      if (isCloudConfigured(state)) {
+      if (isCloudConfigured(state) && !isUserTypingInInput()) {
         pullFromCloud({ silent: true, onlyIfNewer: true });
       }
     }
@@ -1987,7 +2107,7 @@ const App = (() => {
 
   setInterval(() => {
     checkScheduledReminders();
-    if (document.visibilityState === 'visible' && isCloudConfigured(state)) {
+    if (document.visibilityState === 'visible' && isCloudConfigured(state) && !isUserTypingInInput()) {
       pullFromCloud({ silent: true, onlyIfNewer: true });
     }
   }, 10000);
@@ -1996,6 +2116,7 @@ const App = (() => {
     SetScreen(scr) {
       ui.screen = scr;
       ui.showResetConfirm = false;
+      ui.confirmRemoveExId = null;
       render();
     },
     StepActiveDate(delta) {
@@ -2010,6 +2131,21 @@ const App = (() => {
     JumpToToday() {
       ui.activeDate = toDateKey();
       render();
+    },
+    CompleteAllForDate(dateKey) {
+      if (isDateLocked(dateKey)) {
+        showToast('Locked: entries older than 7 days cannot be edited');
+        return;
+      }
+      const log = getDayLog(dateKey);
+      state.exercises.forEach(ex => {
+        const cur = Number(log.exercises[ex.id]) || 0;
+        if (cur < ex.target) {
+          log.exercises[ex.id] = ex.target;
+        }
+      });
+      saveState(true);
+      showToast(`All ${state.exercises.length} daily targets marked complete`);
     },
     BumpExercise(dateKey, exId, delta) {
       if (isDateLocked(dateKey)) {
@@ -2044,6 +2180,13 @@ const App = (() => {
       ui.calMonth = d.getMonth();
       render();
     },
+    JumpCalToToday() {
+      const now = new Date();
+      ui.calYear = now.getFullYear();
+      ui.calMonth = now.getMonth();
+      ui.selectedCalDate = toDateKey(now);
+      render();
+    },
     SelectCalDate(dateKey) {
       if (dateKey <= toDateKey()) {
         ui.selectedCalDate = dateKey;
@@ -2076,6 +2219,18 @@ const App = (() => {
         showToast(`Updated ${ex.name} target to ${ex.target} ${ex.unit}`);
       }
     },
+    MoveExercise(id, delta) {
+      const idx = state.exercises.findIndex(e => e.id === id);
+      if (idx < 0) return;
+      const nextIdx = idx + delta;
+      if (nextIdx < 0 || nextIdx >= state.exercises.length) return;
+      const copy = [...state.exercises];
+      const [moved] = copy.splice(idx, 1);
+      copy.splice(nextIdx, 0, moved);
+      state.exercises = copy;
+      ui.confirmRemoveExId = null;
+      saveState(true);
+    },
     AddExercise() {
       const nameEl = document.getElementById('new-ex-name');
       const targetEl = document.getElementById('new-ex-target');
@@ -2089,6 +2244,7 @@ const App = (() => {
       const unit = unitEl ? unitEl.value : 'reps';
       const id = 'ex_' + Date.now();
       state.exercises.push({ id, name, target, unit });
+      ui.confirmRemoveExId = null;
       saveState(true);
       showToast(`Added ${name} (${target} ${unit})`);
     },
@@ -2097,6 +2253,13 @@ const App = (() => {
         showToast('Keep at least 1 daily exercise');
         return;
       }
+      if (ui.confirmRemoveExId !== id) {
+        ui.confirmRemoveExId = id;
+        render();
+        showToast('Tap Confirm? to remove exercise');
+        return;
+      }
+      ui.confirmRemoveExId = null;
       state.exercises = state.exercises.filter(e => e.id !== id);
       if (ui.chartExerciseId === id) {
         ui.chartExerciseId = state.exercises[0].id;
@@ -2115,6 +2278,15 @@ const App = (() => {
       state.profileName = name || 'Kingsley';
       saveState(true);
       showToast(`Profile updated: ${state.profileName}`);
+    },
+    async PromptInstallApp() {
+      if (!ui.deferredInstallPrompt) return;
+      try {
+        ui.deferredInstallPrompt.prompt();
+        await ui.deferredInstallPrompt.userChoice;
+      } catch (_) {}
+      ui.deferredInstallPrompt = null;
+      render();
     },
     SetThemeMode(mode) {
       state.themeMode = ['dark', 'light', 'system'].includes(mode) ? mode : 'dark';
@@ -2217,7 +2389,7 @@ const App = (() => {
       } else {
         ui.screen = 'settings';
         render();
-        showToast('Set your Secret Passkey in Goals below');
+        showToast('Set your Secret Passkey in Profile & Settings');
       }
     },
     SaveGistConfig() {
