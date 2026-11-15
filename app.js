@@ -141,6 +141,64 @@ const App = (() => {
     return diffDaysBetween(today, dateKey) > EDIT_WINDOW_DAYS;
   }
 
+  const DAY_LABELS_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const DEFAULT_CUSTOM_PATTERN = [1, 3, 5, 6, 2, 4, 0];
+
+  function defaultDaysForCount(count) {
+    const n = Math.max(1, Math.min(7, Number(count) || 1));
+    return DEFAULT_CUSTOM_PATTERN.slice(0, n);
+  }
+
+  function normalizeDaysList(days, countFallback) {
+    const raw = Array.isArray(days) ? days.map(Number).filter(n => Number.isInteger(n) && n >= 0 && n <= 6) : [];
+    const unique = [];
+    raw.forEach(d => {
+      if (!unique.includes(d)) unique.push(d);
+    });
+    if (unique.length === 0) {
+      return defaultDaysForCount(countFallback);
+    }
+    return unique;
+  }
+
+  function normalizeState(st) {
+    if (!st || typeof st !== 'object') return createDefaultState();
+    const targetGym = Math.max(1, Math.min(7, Number(st.weeklyGymTarget) || 4));
+    st.weeklyGymTarget = targetGym;
+    if (st.gymScheduleMode !== 'daily' && st.gymScheduleMode !== 'custom') {
+      st.gymScheduleMode = targetGym >= 7 ? 'daily' : 'custom';
+    }
+    if (st.gymScheduleMode === 'daily') {
+      st.weeklyGymTarget = 7;
+      st.gymScheduleDays = [0, 1, 2, 3, 4, 5, 6];
+    } else {
+      st.gymScheduleDays = normalizeDaysList(st.gymScheduleDays, targetGym).slice(0, Math.max(1, targetGym));
+    }
+    if (!st.gymReschedules || typeof st.gymReschedules !== 'object' || Array.isArray(st.gymReschedules)) {
+      st.gymReschedules = {};
+    }
+    st.exercises = (Array.isArray(st.exercises) ? st.exercises : []).map(ex => {
+      const mode = ex.scheduleMode === 'custom' ? 'custom' : 'daily';
+      if (mode === 'daily') {
+        return {
+          ...ex,
+          scheduleMode: 'daily',
+          scheduleTargetCount: 7,
+          scheduleDays: [0, 1, 2, 3, 4, 5, 6]
+        };
+      }
+      const days = normalizeDaysList(ex.scheduleDays, ex.scheduleTargetCount || 3);
+      const count = Math.max(1, Math.min(6, Number(ex.scheduleTargetCount) || days.length));
+      return {
+        ...ex,
+        scheduleMode: 'custom',
+        scheduleTargetCount: count,
+        scheduleDays: days.slice(0, Math.max(1, count))
+      };
+    });
+    return st;
+  }
+
   // --- Default State & Sample History Seeder ---
   function createDefaultState() {
     const today = toDateKey();
@@ -156,6 +214,9 @@ const App = (() => {
       lastEveningNotifDate: '',
       trackingStartDate: addDays(today, -28),
       weeklyGymTarget: 4,
+      gymScheduleMode: 'custom', // 'daily' | 'custom'
+      gymScheduleDays: [1, 3, 5, 6], // Mon, Wed, Fri, Sat
+      gymReschedules: {}, // { [weekSunKey]: [{ from, to }] }
       syncProvider: 'gdrive', // 'gdrive' (Passkey Google Drive) | 'gist' (Private GitHub Gist)
       syncUrl: '',
       syncPasskey: '',
@@ -166,9 +227,9 @@ const App = (() => {
       biometricCredId: '',
       lastSyncedAt: null,
       exercises: [
-        { id: 'pushups', name: 'Push-ups',   target: 50, unit: 'reps' },
-        { id: 'situps',  name: 'Sit-ups',    target: 50, unit: 'reps' },
-        { id: 'squats',  name: 'Air Squats', target: 40, unit: 'reps' }
+        { id: 'pushups', name: 'Push-ups',   target: 50, unit: 'reps', scheduleMode: 'daily', scheduleTargetCount: 7, scheduleDays: [0, 1, 2, 3, 4, 5, 6] },
+        { id: 'situps',  name: 'Sit-ups',    target: 50, unit: 'reps', scheduleMode: 'daily', scheduleTargetCount: 7, scheduleDays: [0, 1, 2, 3, 4, 5, 6] },
+        { id: 'squats',  name: 'Air Squats', target: 40, unit: 'reps', scheduleMode: 'daily', scheduleTargetCount: 7, scheduleDays: [0, 1, 2, 3, 4, 5, 6] }
       ],
       logs: {}
     };
@@ -279,7 +340,7 @@ const App = (() => {
       if (raw) {
         const parsed = JSON.parse(raw);
         if (parsed && Array.isArray(parsed.exercises)) {
-          const merged = { ...createDefaultState(), ...parsed };
+          const merged = normalizeState({ ...createDefaultState(), ...parsed });
           if (merged.syncUrl && !merged.githubToken) {
             merged.syncProvider = 'gdrive';
           }
@@ -349,9 +410,32 @@ const App = (() => {
     return { status: 'red', text: 'text-red', bg: 'bg-red', hex: '#EF4444' };
   }
 
+  function getExerciseScheduleDays(ex) {
+    if (!ex || ex.scheduleMode !== 'custom') return [0, 1, 2, 3, 4, 5, 6];
+    return normalizeDaysList(ex.scheduleDays, ex.scheduleTargetCount || 3);
+  }
+
+  function isExerciseDueOnDate(ex, dateKey) {
+    const dow = parseDateKey(dateKey).getDay();
+    return getExerciseScheduleDays(ex).includes(dow);
+  }
+
+  function getDueExercisesForDate(dateKey) {
+    return state.exercises.filter(ex => isExerciseDueOnDate(ex, dateKey));
+  }
+
+  function formatScheduleSummary(mode, days, targetCount) {
+    if (mode !== 'custom') return 'Daily (7d/wk)';
+    const sorted = [...days].sort((a, b) => a - b);
+    const names = sorted.map(d => DAY_LABELS_SHORT[d]).join(', ');
+    const cnt = targetCount || sorted.length;
+    return `${cnt}d/wk • ${names}`;
+  }
+
   function isDayHomeMet(dateKey) {
-    if (state.exercises.length === 0) return false;
-    return state.exercises.every(ex => getExerciseVal(dateKey, ex.id) >= ex.target);
+    const due = getDueExercisesForDate(dateKey);
+    if (due.length === 0) return false;
+    return due.every(ex => getExerciseVal(dateKey, ex.id) >= ex.target);
   }
 
   function hasAnyExerciseProgress(dateKey) {
@@ -361,7 +445,18 @@ const App = (() => {
   function getDayStatus(dateKey) {
     const today = toDateKey();
     if (dateKey > today) return 'future';
-    if (isDayHomeMet(dateKey)) return 'green';
+    const due = getDueExercisesForDate(dateKey);
+    if (due.length === 0) {
+      if (hasAnyExerciseProgress(dateKey)) {
+        const touched = state.exercises.filter(ex => getExerciseVal(dateKey, ex.id) > 0);
+        return touched.every(ex => getExerciseVal(dateKey, ex.id) >= ex.target) ? 'green' : 'amber';
+      }
+      if (dateKey === today || dateKey >= state.trackingStartDate) {
+        return 'rest';
+      }
+      return 'none';
+    }
+    if (due.every(ex => getExerciseVal(dateKey, ex.id) >= ex.target)) return 'green';
     if (hasAnyExerciseProgress(dateKey)) return 'amber';
     const hasGym = Boolean(state.logs[dateKey] && state.logs[dateKey].gym);
     if (dateKey === today || dateKey >= state.trackingStartDate || hasGym) {
@@ -372,54 +467,140 @@ const App = (() => {
 
   function computeHomeStreaks() {
     const today = toDateKey();
-    let current = 0;
-    let cursor = isDayHomeMet(today) ? today : addDays(today, -1);
-    while (isDayHomeMet(cursor)) {
-      current++;
-      cursor = addDays(cursor, -1);
-    }
-
     const keys = Object.keys(state.logs).concat([state.trackingStartDate, today]).sort();
     const earliest = keys[0] || today;
+
+    let current = 0;
+    const todayDue = getDueExercisesForDate(today);
+    let cursor = (todayDue.length === 0 || isDayHomeMet(today)) ? today : addDays(today, -1);
+    let safety = 0;
+    while (cursor >= earliest && safety < 1500) {
+      safety++;
+      const due = getDueExercisesForDate(cursor);
+      if (due.length === 0) {
+        cursor = addDays(cursor, -1);
+        continue;
+      }
+      if (isDayHomeMet(cursor)) {
+        current++;
+        cursor = addDays(cursor, -1);
+      } else {
+        break;
+      }
+    }
+
     let best = current;
     let run = 0;
     let scan = earliest;
     while (scan <= today) {
-      if (isDayHomeMet(scan)) {
-        run++;
-        if (run > best) best = run;
-      } else {
-        run = 0;
+      const due = getDueExercisesForDate(scan);
+      if (due.length > 0) {
+        if (isDayHomeMet(scan)) {
+          run++;
+          if (run > best) best = run;
+        } else {
+          run = 0;
+        }
       }
       scan = addDays(scan, 1);
     }
     return { current, best };
   }
 
+  function getGymBaseDays() {
+    if (state.gymScheduleMode === 'daily') return [0, 1, 2, 3, 4, 5, 6];
+    return normalizeDaysList(state.gymScheduleDays, state.weeklyGymTarget || 4);
+  }
+
   function getWeekGymSummary(mondayKey) {
     const today = toDateKey();
     const currentMon = getMondayKey(today);
-    let count = 0;
+    const isDaily = state.gymScheduleMode === 'daily';
+    const baseWeekdays = getGymBaseDays();
+    const rawReschedules = (state.gymReschedules && Array.isArray(state.gymReschedules[mondayKey]))
+      ? state.gymReschedules[mondayKey]
+      : [];
+
     const days = [];
     for (let i = 0; i < 7; i++) {
       const k = addDays(mondayKey, i);
-      const visited = Boolean(state.logs[k] && state.logs[k].gym);
-      if (visited) count++;
+      const dow = parseDateKey(k).getDay();
+      const eligible = k >= today || k >= state.trackingStartDate || mondayKey >= currentMon;
+      const baseScheduled = baseWeekdays.includes(dow) && eligible;
       days.push({
         dateKey: k,
-        visited,
+        dow,
+        baseScheduled,
+        scheduled: baseScheduled,
+        rescheduledOutTo: null,
+        rescheduledInFrom: null,
+        visited: Boolean(state.logs[k] && state.logs[k].gym),
+        missed: false,
+        dueToday: false,
+        upcoming: false,
+        bonus: false,
         isFuture: k > today,
         isLocked: isDateLocked(k)
       });
     }
-    const target = state.weeklyGymTarget;
-    const met = count >= target;
+
+    const activeReschedules = [];
+    rawReschedules.forEach(item => {
+      if (!item || !item.from || !item.to) return;
+      const fromSlot = days.find(d => d.dateKey === item.from);
+      const toSlot = days.find(d => d.dateKey === item.to);
+      if (fromSlot && toSlot && fromSlot.scheduled && !toSlot.scheduled) {
+        fromSlot.scheduled = false;
+        fromSlot.rescheduledOutTo = toSlot.dateKey;
+        toSlot.scheduled = true;
+        toSlot.rescheduledInFrom = fromSlot.dateKey;
+        activeReschedules.push({ from: fromSlot.dateKey, to: toSlot.dateKey });
+      }
+    });
+
+    let count = 0;
+    let scheduledTotal = 0;
+    let scheduledMet = 0;
+    let missedCount = 0;
+
+    days.forEach(slot => {
+      if (slot.visited) count++;
+      if (slot.scheduled) {
+        scheduledTotal++;
+        if (slot.visited) scheduledMet++;
+        else if (slot.dateKey < today) slot.missed = true;
+        else if (slot.dateKey === today) slot.dueToday = true;
+        else slot.upcoming = true;
+        if (slot.missed) missedCount++;
+      } else if (slot.visited) {
+        slot.bonus = true;
+      }
+    });
+
+    const target = isDaily ? 7 : Math.max(1, Number(state.weeklyGymTarget) || baseWeekdays.length || 4);
+    const met = scheduledTotal > 0
+      ? (missedCount === 0 && scheduledMet >= scheduledTotal && count >= Math.min(target, scheduledTotal))
+      : (count >= target);
+
     let status = 'red';
     if (mondayKey > currentMon) status = 'future';
+    else if (addDays(mondayKey, 6) < state.trackingStartDate && count === 0) status = 'none';
     else if (met) status = 'green';
     else if (count > 0) status = 'amber';
-    else if (addDays(mondayKey, 6) < state.trackingStartDate && count === 0) status = 'none';
-    return { mondayKey, count, target, met, status, isCurrent: mondayKey === currentMon, days };
+
+    return {
+      mondayKey,
+      count,
+      target,
+      scheduledTotal,
+      scheduledMet,
+      missedCount,
+      activeReschedules,
+      met,
+      status,
+      isCurrent: mondayKey === currentMon,
+      days
+    };
   }
 
   function computeGymWeeklyStreak() {
@@ -450,25 +631,28 @@ const App = (() => {
 
   function buildGoalReminderPayload(slot, forceTest = false) {
     const today = toDateKey();
-    const unmet = state.exercises.filter(ex => getExerciseVal(today, ex.id) < ex.target);
+    const dueToday = getDueExercisesForDate(today);
+    const unmet = dueToday.filter(ex => getExerciseVal(today, ex.id) < ex.target);
     const curMon = getMondayKey(today);
     const gymSum = getWeekGymSummary(curMon);
-    const visitedGymToday = Boolean(state.logs[today] && state.logs[today].gym);
-    const dowSun0 = new Date().getDay(); // 0=Sun..6=Sat
-    const daysRemainingInWeek = 7 - dowSun0;
-    const gymNeeded = Math.max(0, gymSum.target - gymSum.count);
+    const todayGymSlot = gymSum.days.find(d => d.dateKey === today);
+    const visitedGymToday = Boolean(todayGymSlot && todayGymSlot.visited);
+    const isScheduledGymToday = Boolean(todayGymSlot && todayGymSlot.scheduled);
+    const hasUnresolvedMissedGym = gymSum.missedCount > 0;
 
     const homeDone = unmet.length === 0;
-    const gymUrgent = !gymSum.met && !visitedGymToday && (slot === 'morning' || gymNeeded >= daysRemainingInWeek);
+    const gymUrgent = (isScheduledGymToday && !visitedGymToday) || (hasUnresolvedMissedGym && !visitedGymToday);
 
     if (!forceTest && homeDone && !gymUrgent) {
-      return null; // All goals met — stay silent
+      return null; // All goals due today met — stay silent
     }
 
     if (homeDone && gymSum.met) {
       return {
         title: 'IRONHABIT — All Goals Met',
-        body: `All ${state.exercises.length} daily home targets complete • Weekly Gym target met (${gymSum.count}/${gymSum.target}d).`
+        body: dueToday.length === 0
+          ? `Rest day for home exercises • Weekly Gym target met (${gymSum.count}/${gymSum.target}d).`
+          : `All ${dueToday.length} scheduled home targets complete • Weekly Gym target met (${gymSum.count}/${gymSum.target}d).`
       };
     }
 
@@ -476,26 +660,38 @@ const App = (() => {
       .map(ex => `${ex.name} ${getExerciseVal(today, ex.id)}/${ex.target}`)
       .join(', ');
 
+    const gymStatusLine = visitedGymToday
+      ? `Gym logged today (${gymSum.count}/${gymSum.target}d)`
+      : isScheduledGymToday
+        ? `GYM DAY DUE TODAY (${gymSum.count}/${gymSum.target}d)`
+        : hasUnresolvedMissedGym
+          ? `Missed gym this week — reschedule & log (${gymSum.count}/${gymSum.target}d)`
+          : gymSum.met
+            ? `Gym goal met (${gymSum.count}/${gymSum.target}d)`
+            : `Gym: ${gymSum.count}/${gymSum.target}d (Rest today)`;
+
     if (slot === 'morning') {
-      const title = 'IRONHABIT — Morning Target Check-In';
-      const homePart = homeDone
-        ? 'Daily home targets complete'
-        : `${unmet.length}/${state.exercises.length} daily targets pending (${unmetSummary})`;
-      const gymPart = gymSum.met
-        ? `Gym goal met (${gymSum.count}/${gymSum.target}d)`
-        : `Weekly Gym: ${gymSum.count}/${gymSum.target}d (${gymNeeded} left this week)`;
-      return { title, body: `${homePart} • ${gymPart}` };
+      const title = isScheduledGymToday && !visitedGymToday
+        ? 'IRONHABIT — Gym Day Scheduled Today'
+        : 'IRONHABIT — Morning Target Check-In';
+      const homePart = dueToday.length === 0
+        ? 'Home exercises: Rest day today'
+        : homeDone
+          ? 'Scheduled home targets complete'
+          : `${unmet.length}/${dueToday.length} scheduled targets due (${unmetSummary})`;
+      return { title, body: `${homePart} • ${gymStatusLine}` };
     }
 
     const streaks = computeHomeStreaks();
-    const title = 'IRONHABIT — Evening Accountability Alert';
-    const homePart = homeDone
-      ? 'Daily home targets complete'
-      : `${unmet.length} target(s) unfinished (${unmetSummary})${streaks.current > 0 ? ` — protect your ${streaks.current}d streak!` : ''}`;
-    const gymPart = gymSum.met
-      ? `Gym met (${gymSum.count}/${gymSum.target}d)`
-      : `Gym: ${gymSum.count}/${gymSum.target}d`;
-    return { title, body: `${homePart} • ${gymPart}` };
+    const title = isScheduledGymToday && !visitedGymToday
+      ? 'IRONHABIT — Gym Check-In Due Tonight'
+      : 'IRONHABIT — Evening Accountability Alert';
+    const homePart = dueToday.length === 0
+      ? 'Home exercises: Rest day today'
+      : homeDone
+        ? 'Scheduled home targets complete'
+        : `${unmet.length} scheduled target(s) unfinished (${unmetSummary})${streaks.current > 0 ? ` — protect your ${streaks.current}d streak!` : ''}`;
+    return { title, body: `${homePart} • ${gymStatusLine}` };
   }
 
   async function dispatchBrowserNotification(title, body) {
@@ -1073,14 +1269,14 @@ const App = (() => {
             updateSyncHeader();
             return;
           }
-          state = {
+          state = normalizeState({
             ...createDefaultState(),
             ...payload,
             ...preservedAuth,
             gistId,
             updatedAt: remoteUpdatedAt || Date.now(),
             lastSyncedAt: Date.now()
-          };
+          });
           hasUnsyncedLocalChanges = false;
           localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
           ui.syncStatus = 'synced';
@@ -1117,13 +1313,13 @@ const App = (() => {
           updateSyncHeader();
           return;
         }
-        state = {
+        state = normalizeState({
           ...createDefaultState(),
           ...data.payload,
           ...preservedAuth,
           updatedAt: remoteUpdatedAt || Date.now(),
           lastSyncedAt: Date.now()
-        };
+        });
         hasUnsyncedLocalChanges = false;
         localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
         ui.syncStatus = 'synced';
@@ -1193,15 +1389,21 @@ const App = (() => {
     hdrHomeStreakEl.textContent = String(streaks.current);
     document.getElementById('hdr-home-best').textContent = `Best: ${streaks.best}d`;
 
-    const avgPct = state.exercises.length > 0
+    const dueToday = getDueExercisesForDate(today);
+    const avgPct = dueToday.length > 0
       ? Math.round(
-          (state.exercises.reduce((acc, ex) => acc + Math.min(1, getExerciseVal(today, ex.id) / Math.max(1, ex.target)), 0) /
-            state.exercises.length) * 100
+          (dueToday.reduce((acc, ex) => acc + Math.min(1, getExerciseVal(today, ex.id) / Math.max(1, ex.target)), 0) /
+            dueToday.length) * 100
         )
-      : 0;
+      : 100;
     const hdrHomeStatus = document.getElementById('hdr-home-status');
-    hdrHomeStatus.textContent = `${avgPct}%`;
-    hdrHomeStatus.className = `tabular-nums ${avgPct >= 100 ? 'text-emerald' : avgPct > 0 ? 'text-amber' : 'text-red'}`;
+    if (dueToday.length === 0) {
+      hdrHomeStatus.textContent = 'REST';
+      hdrHomeStatus.className = 'tabular-nums text-sky';
+    } else {
+      hdrHomeStatus.textContent = `${avgPct}%`;
+      hdrHomeStatus.className = `tabular-nums ${avgPct >= 100 ? 'text-emerald' : avgPct > 0 ? 'text-amber' : 'text-red'}`;
+    }
 
     const curMon = getMondayKey(today);
     const gymSum = getWeekGymSummary(curMon);
@@ -1211,9 +1413,24 @@ const App = (() => {
     hdrGymRatioEl.textContent = gymRatioStr;
     document.getElementById('hdr-gym-streak').textContent = `${gymStreak}w Streak`;
 
+    const todayGymSlot = gymSum.days.find(d => d.dateKey === today);
     const hdrGymStatus = document.getElementById('hdr-gym-status');
-    hdrGymStatus.textContent = gymSum.met ? 'Met' : gymSum.count > 0 ? 'In Prog' : '0 Logged';
-    hdrGymStatus.className = `tabular-nums ${gymSum.met ? 'text-emerald' : gymSum.count > 0 ? 'text-amber' : 'text-red'}`;
+    if (gymSum.met) {
+      hdrGymStatus.textContent = 'Met';
+      hdrGymStatus.className = 'tabular-nums text-emerald';
+    } else if (gymSum.missedCount > 0) {
+      hdrGymStatus.textContent = `${gymSum.missedCount} Missed`;
+      hdrGymStatus.className = 'tabular-nums text-red';
+    } else if (todayGymSlot && todayGymSlot.dueToday) {
+      hdrGymStatus.textContent = 'Due Today';
+      hdrGymStatus.className = 'tabular-nums text-sky';
+    } else if (gymSum.count > 0) {
+      hdrGymStatus.textContent = 'In Prog';
+      hdrGymStatus.className = 'tabular-nums text-amber';
+    } else {
+      hdrGymStatus.textContent = '0 Logged';
+      hdrGymStatus.className = 'tabular-nums text-red';
+    }
 
     if (lastHeaderMetrics) {
       if (lastHeaderMetrics.streak !== streaks.current) {
@@ -1233,6 +1450,53 @@ const App = (() => {
     };
   }
 
+  function renderTodayExerciseCard(ex, dateKey, isDue) {
+    const current = getExerciseVal(dateKey, ex.id);
+    const pct = Math.min(100, Math.round((current / Math.max(1, ex.target)) * 100));
+    const tone = getMetricTone(current, ex.target);
+    const done = current >= ex.target;
+    const isBumpedEx = pendingFx && pendingFx.dateKey === dateKey &&
+      ((pendingFx.type === 'ex-change' && pendingFx.exId === ex.id) || pendingFx.type === 'complete-all');
+    const isTargetHitEx = pendingFx && pendingFx.dateKey === dateKey &&
+      ((pendingFx.type === 'ex-change' && pendingFx.exId === ex.id && pendingFx.hitTarget) ||
+       (pendingFx.type === 'complete-all' && pendingFx.hitIds && pendingFx.hitIds.includes(ex.id)));
+
+    return `
+      <div class="surface-inset ex-box ${isTargetHitEx ? 'fx-target-met' : ''}" data-ex-id="${ex.id}" style="${isDue ? '' : 'opacity:0.86;'}">
+        <div class="ex-top-line">
+          <div style="display:flex;align-items:center;gap:6px;min-width:0;">
+            <span class="ex-title" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(ex.name)}</span>
+            ${ex.scheduleMode === 'custom'
+              ? (isDue ? '<span class="due-badge">Due</span>' : '<span class="rest-badge">Rest</span>')
+              : ''}
+          </div>
+          <div class="ex-input-group tabular-nums">
+            <input type="number" min="0" value="${current}"
+                   data-ex-id="${ex.id}"
+                   class="num-input ${tone.text} tabular-nums ${isBumpedEx ? 'fx-val-pop' : ''}"
+                   onchange="App.SetExactExercise('${dateKey}', '${ex.id}', this.value)" />
+            <span class="${tone.text}" style="font-weight:600;">/ ${ex.target} ${escapeHtml(ex.unit)}</span>
+          </div>
+        </div>
+
+        <div class="progress-rail">
+          <div class="progress-fill ${tone.bg}" data-ex-id="${ex.id}" data-target-pct="${pct}" style="width:${pct}%;"></div>
+        </div>
+
+        <div class="increment-grid">
+          <button class="inc-btn tabular-nums smooth-ui" onclick="App.BumpExercise('${dateKey}', '${ex.id}', -1)">-1</button>
+          <button class="inc-btn tabular-nums smooth-ui" onclick="App.BumpExercise('${dateKey}', '${ex.id}', 1)">+1</button>
+          <button class="inc-btn tabular-nums smooth-ui" onclick="App.BumpExercise('${dateKey}', '${ex.id}', 5)">+5</button>
+          <button class="inc-btn tabular-nums smooth-ui" onclick="App.BumpExercise('${dateKey}', '${ex.id}', 10)">+10</button>
+          <button class="inc-btn target-btn ${done ? 'met' : ''} tabular-nums smooth-ui"
+                  onclick="App.SetExactExercise('${dateKey}', '${ex.id}', ${ex.target})">
+            ${ex.target}
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
   // --- SCREEN 1: TODAY & 7-DAY EDITABLE LOGGING ---
   function renderTodayScreen() {
     const today = toDateKey();
@@ -1241,18 +1505,49 @@ const App = (() => {
     const oldestEditable = addDays(today, -EDIT_WINDOW_DAYS);
     const atOldestLimit = dateKey <= oldestEditable;
 
-    const metCount = state.exercises.filter(ex => getExerciseVal(dateKey, ex.id) >= ex.target).length;
+    const dueExercises = getDueExercisesForDate(dateKey);
+    const optionalExercises = state.exercises.filter(ex => !isExerciseDueOnDate(ex, dateKey));
+    const dueMetCount = dueExercises.filter(ex => getExerciseVal(dateKey, ex.id) >= ex.target).length;
     const dayStatus = getDayStatus(dateKey);
 
     const mondayKey = getMondayKey(dateKey);
     const weekGym = getWeekGymSummary(mondayKey);
-    const dayNamesShort = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const dayNamesShort = DAY_LABELS_SHORT;
+    const activeSlot = weekGym.days.find(d => d.dateKey === dateKey);
     const activeDayGym = Boolean(state.logs[dateKey] && state.logs[dateKey].gym);
+
+    const editableMissedSlots = weekGym.days.filter(s => s.missed && !isDateLocked(s.dateKey));
+    const upcomingScheduledSlots = weekGym.days.filter(s => s.scheduled && !s.visited && s.dateKey >= today);
+    const shiftSources = [...editableMissedSlots, ...upcomingScheduledSlots];
+    const openShiftTargets = weekGym.days.filter(s => !s.scheduled && !s.visited && diffDaysBetween(today, s.dateKey) <= EDIT_WINDOW_DAYS);
+
+    const canQuickShiftToActive = Boolean(
+      activeSlot &&
+      !activeSlot.scheduled &&
+      !activeSlot.visited &&
+      !isDateLocked(dateKey) &&
+      editableMissedSlots.length > 0
+    );
+    const quickSource = editableMissedSlots[0] || null;
+    const defaultFromKey = (editableMissedSlots[0] || (activeSlot && activeSlot.scheduled && !activeSlot.visited ? activeSlot : shiftSources[0]) || {}).dateKey || '';
+    const defaultToSlot = openShiftTargets.find(s => s.dateKey === today) ||
+      openShiftTargets.find(s => s.dateKey === dateKey) ||
+      openShiftTargets.find(s => s.dateKey > (defaultFromKey || today)) ||
+      openShiftTargets[0];
+    const defaultToKey = defaultToSlot ? defaultToSlot.dateKey : '';
 
     const splitSlideClass = (pendingFx && pendingFx.type === 'date-step')
       ? (pendingFx.dir > 0 ? 'fx-slide-next' : 'fx-slide-prev')
       : '';
     const isGymToggledForDate = pendingFx && pendingFx.type === 'gym-toggle' && pendingFx.dateKey === dateKey;
+
+    const homeSquareClass = dayStatus === 'green'
+      ? 'bg-emerald'
+      : dayStatus === 'amber'
+        ? 'bg-amber'
+        : dayStatus === 'rest'
+          ? 'bg-sky'
+          : 'bg-red';
 
     return `
       <!-- Date Switcher Bar (Restricted to 7-Day Edit Window) -->
@@ -1275,62 +1570,42 @@ const App = (() => {
           <div class="card-head">
             <div>
               <div class="section-heading">Daily Home Exercises</div>
-              <div class="section-sub tabular-nums">${metCount} of ${state.exercises.length} targets complete</div>
+              <div class="section-sub tabular-nums">
+                ${dueExercises.length > 0
+                  ? `${dueMetCount} of ${dueExercises.length} due targets complete`
+                  : 'Scheduled Rest Day — all exercises optional today'}
+              </div>
             </div>
             <div style="display:flex;align-items:center;gap:8px;">
-              ${metCount < state.exercises.length ? `
+              ${dueExercises.length > 0 && dueMetCount < dueExercises.length ? `
                 <button class="step-btn smooth-ui" style="color:var(--emerald-400);border-color:rgba(16,185,129,0.4);"
                         onclick="App.CompleteAllForDate('${dateKey}')">
-                  Complete All
+                  Complete Due
                 </button>
               ` : ''}
-              <span class="status-square ${dayStatus === 'green' ? 'bg-emerald' : dayStatus === 'amber' ? 'bg-amber' : 'bg-red'}"></span>
+              <span class="status-square ${homeSquareClass}"></span>
             </div>
           </div>
 
-          <div class="stack-list">
-            ${state.exercises.map(ex => {
-              const current = getExerciseVal(dateKey, ex.id);
-              const pct = Math.min(100, Math.round((current / Math.max(1, ex.target)) * 100));
-              const tone = getMetricTone(current, ex.target);
-              const done = current >= ex.target;
-              const isBumpedEx = pendingFx && pendingFx.dateKey === dateKey &&
-                ((pendingFx.type === 'ex-change' && pendingFx.exId === ex.id) || pendingFx.type === 'complete-all');
-              const isTargetHitEx = pendingFx && pendingFx.dateKey === dateKey &&
-                ((pendingFx.type === 'ex-change' && pendingFx.exId === ex.id && pendingFx.hitTarget) ||
-                 (pendingFx.type === 'complete-all' && pendingFx.hitIds && pendingFx.hitIds.includes(ex.id)));
+          ${dueExercises.length > 0 ? `
+            <div class="stack-list">
+              ${dueExercises.map(ex => renderTodayExerciseCard(ex, dateKey, true)).join('')}
+            </div>
+          ` : `
+            <div class="surface-inset" style="padding:10px 12px;font-size:0.75rem;color:var(--text-slate-400);">
+              No exercises scheduled for ${DAY_LABELS_SHORT[parseDateKey(dateKey).getDay()]}. Take your recovery or log optional bonus sets below.
+            </div>
+          `}
 
-              return `
-                <div class="surface-inset ex-box ${isTargetHitEx ? 'fx-target-met' : ''}" data-ex-id="${ex.id}">
-                  <div class="ex-top-line">
-                    <span class="ex-title">${escapeHtml(ex.name)}</span>
-                    <div class="ex-input-group tabular-nums">
-                      <input type="number" min="0" value="${current}"
-                             data-ex-id="${ex.id}"
-                             class="num-input ${tone.text} tabular-nums ${isBumpedEx ? 'fx-val-pop' : ''}"
-                             onchange="App.SetExactExercise('${dateKey}', '${ex.id}', this.value)" />
-                      <span class="${tone.text}" style="font-weight:600;">/ ${ex.target} ${escapeHtml(ex.unit)}</span>
-                    </div>
-                  </div>
-
-                  <div class="progress-rail">
-                    <div class="progress-fill ${tone.bg}" data-ex-id="${ex.id}" data-target-pct="${pct}" style="width:${pct}%;"></div>
-                  </div>
-
-                  <div class="increment-grid">
-                    <button class="inc-btn tabular-nums smooth-ui" onclick="App.BumpExercise('${dateKey}', '${ex.id}', -1)">-1</button>
-                    <button class="inc-btn tabular-nums smooth-ui" onclick="App.BumpExercise('${dateKey}', '${ex.id}', 1)">+1</button>
-                    <button class="inc-btn tabular-nums smooth-ui" onclick="App.BumpExercise('${dateKey}', '${ex.id}', 5)">+5</button>
-                    <button class="inc-btn tabular-nums smooth-ui" onclick="App.BumpExercise('${dateKey}', '${ex.id}', 10)">+10</button>
-                    <button class="inc-btn target-btn ${done ? 'met' : ''} tabular-nums smooth-ui"
-                            onclick="App.SetExactExercise('${dateKey}', '${ex.id}', ${ex.target})">
-                      ${ex.target}
-                    </button>
-                  </div>
-                </div>
-              `;
-            }).join('')}
-          </div>
+          ${optionalExercises.length > 0 ? `
+            <div class="optional-divider">
+              <span>Rest Day / Optional Today</span>
+              <span>${optionalExercises.length} off schedule</span>
+            </div>
+            <div class="stack-list" style="margin-top:8px;">
+              ${optionalExercises.map(ex => renderTodayExerciseCard(ex, dateKey, false)).join('')}
+            </div>
+          ` : ''}
         </section>
 
         <!-- Weekly Gym Attendance -->
@@ -1338,9 +1613,13 @@ const App = (() => {
           <div class="card-head">
             <div>
               <div class="section-heading">Weekly Gym Attendance</div>
-              <div class="section-sub">Tap any day within 7 days to log or unlog</div>
+              <div class="section-sub">
+                ${state.gymScheduleMode === 'daily'
+                  ? 'Committed Daily (7d/wk) • Strict Schedule'
+                  : `Committed: ${formatScheduleSummary('custom', getGymBaseDays(), state.weeklyGymTarget)}`}
+              </div>
             </div>
-            <span class="tabular-nums ${weekGym.met ? 'text-emerald' : weekGym.count > 0 ? 'text-amber' : 'text-red'}"
+            <span class="tabular-nums ${weekGym.met ? 'text-emerald' : weekGym.missedCount > 0 ? 'text-red' : weekGym.count > 0 ? 'text-amber' : 'text-red'}"
                   style="font-size:0.75rem;font-weight:700;">
               ${weekGym.count}/${weekGym.target}
             </span>
@@ -1349,21 +1628,105 @@ const App = (() => {
           <div class="week-7-grid">
             ${weekGym.days.map((slot, idx) => {
               const isSlotToggled = pendingFx && pendingFx.type === 'gym-toggle' && pendingFx.dateKey === slot.dateKey;
+              let tileCls = 'week-day-btn smooth-ui';
+              let tagHtml = '<span class="gym-slot-tag" style="opacity:0.45;">OFF</span>';
+              if (slot.visited) {
+                tileCls += ' visited';
+                tagHtml = `<span class="gym-slot-tag text-sky">${slot.scheduled ? 'DONE' : 'BONUS'}</span>`;
+              } else if (slot.missed) {
+                tileCls += ' gym-missed';
+                tagHtml = '<span class="gym-slot-tag text-red">MISS</span>';
+              } else if (slot.rescheduledOutTo) {
+                tileCls += ' gym-moved';
+                tagHtml = '<span class="gym-slot-tag">MOVED</span>';
+              } else if (slot.scheduled) {
+                tileCls += ' gym-scheduled';
+                tagHtml = `<span class="gym-slot-tag text-sky">${slot.rescheduledInFrom ? 'SHIFT' : 'DUE'}</span>`;
+              }
+              if (slot.dateKey === dateKey) tileCls += ' active-ring';
+              if (slot.isFuture || slot.isLocked) tileCls += ' locked-day';
+              if (isSlotToggled) tileCls += ' fx-gym-pop';
+
               return `
-              <button class="week-day-btn ${slot.visited ? 'visited' : ''} ${slot.dateKey === dateKey ? 'active-ring' : ''} ${slot.isFuture || slot.isLocked ? 'locked-day' : ''} ${isSlotToggled ? 'fx-gym-pop' : ''} smooth-ui"
-                      data-date-key="${slot.dateKey}"
-                      onclick="App.ToggleGym('${slot.dateKey}')">
-                <div>${dayNamesShort[idx]}</div>
-                <div><span class="gym-dot ${slot.visited ? 'on' : ''}"></span></div>
-              </button>
-            `;
+                <button class="${tileCls}"
+                        data-date-key="${slot.dateKey}"
+                        onclick="App.ToggleGym('${slot.dateKey}')">
+                  <div>${dayNamesShort[idx]}</div>
+                  <div><span class="gym-dot ${slot.visited ? 'on' : ''}"></span></div>
+                  ${tagHtml}
+                </button>
+              `;
             }).join('')}
           </div>
 
           <button class="gym-action-btn ${activeDayGym ? 'visited' : ''} ${isGymToggledForDate ? 'fx-gym-btn-pulse' : ''} smooth-ui"
                   onclick="App.ToggleGym('${dateKey}')">
-            ${activeDayGym ? `Gym Visited (${formatShortDate(dateKey)})` : `Log Gym Visit (${formatShortDate(dateKey)})`}
+            ${activeDayGym
+              ? `Gym Visited (${formatShortDate(dateKey)})`
+              : (activeSlot && activeSlot.scheduled)
+                ? `Log Scheduled Gym (${formatShortDate(dateKey)})`
+                : `Log Gym Visit (${formatShortDate(dateKey)})`}
           </button>
+
+          ${(canQuickShiftToActive || (shiftSources.length > 0 && openShiftTargets.length > 0) || weekGym.activeReschedules.length > 0) ? `
+            <div class="resched-box ${editableMissedSlots.length > 0 ? 'resched-alert' : ''}">
+              ${canQuickShiftToActive && quickSource ? `
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+                  <span style="font-size:0.72rem;font-weight:600;color:var(--red-300);">
+                    Missed ${DAY_LABELS_SHORT[quickSource.dow]} (${quickSource.dateKey.slice(5)}) gym
+                  </span>
+                  <button class="step-btn smooth-ui"
+                          style="color:var(--sky-300);border-color:rgba(56,189,248,0.55);background:rgba(14,165,233,0.14);"
+                          onclick="App.RescheduleGymDay('${quickSource.dateKey}', '${dateKey}')">
+                    Shift ${DAY_LABELS_SHORT[quickSource.dow]} &rarr; ${isToday ? 'Today' : DAY_LABELS_SHORT[activeSlot.dow]}
+                  </button>
+                </div>
+              ` : ''}
+
+              ${(shiftSources.length > 0 && openShiftTargets.length > 0) ? `
+                <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                  <span style="font-size:0.7rem;font-weight:700;color:var(--text-slate-400);text-transform:uppercase;">Reschedule:</span>
+                  <select id="resched-from-${mondayKey}" class="text-input" style="padding:3px 6px;font-size:0.72rem;">
+                    ${shiftSources.map(s => `
+                      <option value="${s.dateKey}" ${s.dateKey === defaultFromKey ? 'selected' : ''}>
+                        ${DAY_LABELS_SHORT[s.dow]} (${s.dateKey.slice(5)})${s.missed ? ' • Missed' : ''}
+                      </option>
+                    `).join('')}
+                  </select>
+                  <span style="font-size:0.75rem;color:var(--text-slate-500);">&rarr;</span>
+                  <select id="resched-to-${mondayKey}" class="text-input" style="padding:3px 6px;font-size:0.72rem;">
+                    ${openShiftTargets.map(s => `
+                      <option value="${s.dateKey}" ${s.dateKey === defaultToKey ? 'selected' : ''}>
+                        ${DAY_LABELS_SHORT[s.dow]} (${s.dateKey.slice(5)})${s.dateKey === today ? ' • Today' : ''}
+                      </option>
+                    `).join('')}
+                  </select>
+                  <button class="mini-btn smooth-ui"
+                          style="color:var(--sky-300);border-color:rgba(56,189,248,0.45);"
+                          onclick="App.RescheduleGymFromControls('${mondayKey}')">
+                    Shift
+                  </button>
+                </div>
+              ` : ''}
+
+              ${weekGym.activeReschedules.length > 0 ? `
+                <div style="display:flex;flex-wrap:wrap;gap:6px;">
+                  ${weekGym.activeReschedules.map(r => {
+                    const fDow = DAY_LABELS_SHORT[parseDateKey(r.from).getDay()];
+                    const tDow = DAY_LABELS_SHORT[parseDateKey(r.to).getDay()];
+                    return `
+                      <span class="resched-pill tabular-nums">
+                        <span>Moved ${fDow} &rarr; ${tDow}</span>
+                        <button style="color:var(--text-slate-400);font-weight:700;"
+                                onclick="App.UndoGymReschedule('${mondayKey}', '${r.to}')"
+                                title="Revert reschedule">Undo</button>
+                      </span>
+                    `;
+                  }).join('')}
+                </div>
+              ` : ''}
+            </div>
+          ` : ''}
         </section>
       </div>
     `;
@@ -1404,12 +1767,16 @@ const App = (() => {
           else if (st === 'red') monthRedDays++;
           if (gym) monthGymVisits++;
         }
+        const gymSlot = gymSum.days[d];
         days.push({
           dateKey: k,
           dayNum: dt.getDate(),
           inMonth,
           status: st,
           gym,
+          gymScheduled: Boolean(gymSlot && gymSlot.scheduled),
+          gymMissed: Boolean(gymSlot && gymSlot.missed),
+          gymDueToday: Boolean(gymSlot && gymSlot.dueToday),
           isFuture: k > today
         });
       }
@@ -1421,6 +1788,12 @@ const App = (() => {
     const selKey = ui.selectedCalDate;
     const selStatus = getDayStatus(selKey);
     const selGym = Boolean(state.logs[selKey] && state.logs[selKey].gym);
+    const selMonKey = getMondayKey(selKey);
+    const selWeekGym = getWeekGymSummary(selMonKey);
+    const selGymSlot = selWeekGym.days.find(d => d.dateKey === selKey);
+    const selMissedToShift = (!locked && selGymSlot && !selGymSlot.scheduled && !selGymSlot.visited)
+      ? selWeekGym.days.find(s => s.missed && !isDateLocked(s.dateKey))
+      : null;
     const locked = isDateLocked(selKey);
     const calMonthClass = (pendingFx && pendingFx.type === 'cal-month')
       ? (pendingFx.dir > 0 ? 'fx-slide-next' : 'fx-slide-prev')
@@ -1465,22 +1838,28 @@ const App = (() => {
                   if (d.status === 'green') cls += ' green';
                   else if (d.status === 'red') cls += ' red';
                   else if (d.status === 'amber') cls += ' amber';
+                  else if (d.status === 'rest') cls += ' rest';
                   if (!d.inMonth) cls += ' other-month';
                   if (d.dateKey === selKey) {
                     cls += ' selected';
                     if (isCalSelect) cls += ' fx-cell-select';
                   }
 
+                  let gymMarker = '<span></span>';
+                  if (d.gym) gymMarker = '<span class="cal-gym-dot"></span>';
+                  else if (d.gymMissed) gymMarker = '<span class="cal-gym-miss-dot"></span>';
+                  else if (d.gymDueToday) gymMarker = '<span class="cal-gym-due-dot"></span>';
+
                   return `
                     <button class="${cls}" onclick="${d.isFuture ? '' : `App.SelectCalDate('${d.dateKey}')`}">
                       <span class="tabular-nums" style="line-height:1;">${d.dayNum}</span>
-                      ${d.gym ? `<span class="cal-gym-dot"></span>` : '<span></span>'}
+                      ${gymMarker}
                     </button>
                   `;
                 }).join('')}
 
-                <div class="${wkCls}">
-                  ${gs.status === 'future' || gs.status === 'none' ? '—' : `${gs.count}/${gs.target}`}
+                <div class="${wkCls}" title="${gs.missedCount > 0 ? `${gs.missedCount} scheduled gym day(s) missed` : ''}">
+                  ${gs.status === 'future' || gs.status === 'none' ? '—' : `${gs.count}/${gs.target}${gs.missedCount > 0 ? '!' : ''}`}
                 </div>
               </div>
             `;
@@ -1511,9 +1890,13 @@ const App = (() => {
       <!-- Selected-Date Inspector / Editor Below Calendar -->
       <section class="surface-card card-pad ${isCalSelect ? 'fx-inspector-swap' : ''}">
         <div class="card-head">
-          <div style="display:flex;align-items:center;gap:8px;">
-            <span class="status-square ${selStatus === 'green' ? 'bg-emerald' : selStatus === 'amber' ? 'bg-amber' : 'bg-red'}"></span>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <span class="status-square ${selStatus === 'green' ? 'bg-emerald' : selStatus === 'amber' ? 'bg-amber' : selStatus === 'rest' ? 'bg-sky' : 'bg-red'}"></span>
             <span class="section-heading tabular-nums">${formatMonthDayYear(selKey)}</span>
+            ${selStatus === 'rest' ? '<span class="rest-badge">Rest Day</span>' : ''}
+            ${selGymSlot && selGymSlot.missed ? '<span class="locked-tag" style="color:var(--red-300);border-color:rgba(239,68,68,0.5);">GYM MISSED</span>' : ''}
+            ${selGymSlot && selGymSlot.scheduled && !selGymSlot.missed ? '<span class="due-badge">Gym Scheduled</span>' : ''}
+            ${selGymSlot && selGymSlot.rescheduledOutTo ? `<span class="rest-badge">Gym &rarr; ${DAY_LABELS_SHORT[parseDateKey(selGymSlot.rescheduledOutTo).getDay()]}</span>` : ''}
             ${locked ? `<span class="locked-tag">LOCKED (&gt;7D)</span>` : ''}
           </div>
 
@@ -1523,12 +1906,21 @@ const App = (() => {
               <span>${selGym ? 'Gym Visited' : 'No Gym Visit'}</span>
             </span>
           ` : `
-            <button class="step-btn smooth-ui ${pendingFx && pendingFx.type === 'gym-toggle' && pendingFx.dateKey === selKey ? 'fx-gym-btn-pulse' : ''}"
-                    style="display:inline-flex;align-items:center;gap:6px;${selGym ? 'background:rgba(14,165,233,0.2);border-color:var(--sky-400);color:var(--sky-300);' : ''}"
-                    onclick="App.ToggleGym('${selKey}')">
-              <span style="width:8px;height:8px;border-radius:50%;background:${selGym ? 'var(--sky-400)' : '#475569'};"></span>
-              <span>${selGym ? 'Gym Visited' : 'Mark Gym Visit'}</span>
-            </button>
+            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+              ${selMissedToShift ? `
+                <button class="step-btn smooth-ui"
+                        style="color:var(--sky-300);border-color:rgba(56,189,248,0.5);"
+                        onclick="App.RescheduleGymDay('${selMissedToShift.dateKey}', '${selKey}')">
+                  Shift ${DAY_LABELS_SHORT[selMissedToShift.dow]} &rarr; Here
+                </button>
+              ` : ''}
+              <button class="step-btn smooth-ui ${pendingFx && pendingFx.type === 'gym-toggle' && pendingFx.dateKey === selKey ? 'fx-gym-btn-pulse' : ''}"
+                      style="display:inline-flex;align-items:center;gap:6px;${selGym ? 'background:rgba(14,165,233,0.2);border-color:var(--sky-400);color:var(--sky-300);' : ''}"
+                      onclick="App.ToggleGym('${selKey}')">
+                <span style="width:8px;height:8px;border-radius:50%;background:${selGym ? 'var(--sky-400)' : '#475569'};"></span>
+                <span>${selGym ? 'Gym Visited' : 'Mark Gym Visit'}</span>
+              </button>
+            </div>
           `}
         </div>
 
@@ -1537,14 +1929,20 @@ const App = (() => {
             const val = getExerciseVal(selKey, ex.id);
             const tone = getMetricTone(val, ex.target);
             const met = val >= ex.target;
+            const isDue = isExerciseDueOnDate(ex, selKey);
             const isBumpedEx = pendingFx && pendingFx.dateKey === selKey &&
               pendingFx.type === 'ex-change' && pendingFx.exId === ex.id;
             const isTargetHitEx = isBumpedEx && pendingFx.hitTarget;
 
             return `
-              <div class="surface-inset editor-row ${isTargetHitEx ? 'fx-target-met' : ''}">
+              <div class="surface-inset editor-row ${isTargetHitEx ? 'fx-target-met' : ''}" style="${isDue ? '' : 'opacity:0.78;'}">
                 <div style="min-width:0;">
-                  <div class="ex-title">${escapeHtml(ex.name)}</div>
+                  <div style="display:flex;align-items:center;gap:6px;">
+                    <span class="ex-title">${escapeHtml(ex.name)}</span>
+                    ${ex.scheduleMode === 'custom'
+                      ? (isDue ? '<span class="due-badge">Due</span>' : '<span class="rest-badge">Rest</span>')
+                      : ''}
+                  </div>
                   <div class="tabular-nums ${tone.text}" style="font-size:0.75rem;font-weight:600;">
                     ${val} / ${ex.target} ${escapeHtml(ex.unit)}
                   </div>
@@ -1716,6 +2114,9 @@ const App = (() => {
         w: `W${getISOWeekNumber(mKey)}`,
         c: gs.count,
         t: gs.target,
+        met: gs.met,
+        missed: gs.missedCount,
+        status: gs.status,
         current: w === 0
       });
     }
@@ -1794,21 +2195,26 @@ const App = (() => {
       <section class="surface-card card-pad">
         <div class="card-head">
           <span class="section-heading">All Exercises — Today Snapshot</span>
-          <span class="section-sub tabular-nums">${state.exercises.length} active</span>
+          <span class="section-sub tabular-nums">${getDueExercisesForDate(today).length}/${state.exercises.length} due today</span>
         </div>
         <div class="snapshot-grid">
           ${state.exercises.map(ex => {
             const v = getExerciseVal(today, ex.id);
+            const due = isExerciseDueOnDate(ex, today);
             const tone = getMetricTone(v, ex.target);
             const isSel = ex.id === activeEx.id;
+            const statusText = due
+              ? `${v}/${ex.target}`
+              : (v > 0 ? `${v}/${ex.target} OPT` : 'REST');
+            const statusCls = due ? tone.text : (v > 0 ? 'text-sky' : 'text-muted');
             return `
               <button class="surface-inset snapshot-tile ${isSel ? 'active' : ''} smooth-ui"
                       onclick="App.SetChartExercise('${ex.id}')">
                 <span style="font-size:0.75rem;font-weight:500;color:var(--text-slate-300);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
                   ${escapeHtml(ex.name)}
                 </span>
-                <span class="tabular-nums ${tone.text}" style="font-size:0.75rem;font-weight:700;">
-                  ${v}/${ex.target}
+                <span class="tabular-nums ${statusCls}" style="font-size:0.75rem;font-weight:700;">
+                  ${statusText}
                 </span>
               </button>
             `;
@@ -1820,19 +2226,19 @@ const App = (() => {
       <section class="surface-card card-pad">
         <div class="card-head">
           <span class="section-heading">Weekly Gym Consistency</span>
-          <span class="section-sub tabular-nums">Target: ${state.weeklyGymTarget}d / wk</span>
+          <span class="section-sub tabular-nums">${escapeHtml(formatScheduleSummary(state.gymScheduleMode, getGymBaseDays(), state.weeklyGymTarget))}</span>
         </div>
         <div class="gym-6-grid">
           ${gymWeeks.map(wk => {
-            const met = wk.c >= wk.t;
             let cls = 'gym-wk-box tabular-nums ';
-            if (met) cls += 'green';
-            else if (wk.c > 0) cls += 'amber';
+            if (wk.status === 'green' || wk.met) cls += 'green';
+            else if (wk.status === 'amber') cls += 'amber';
+            else if (wk.status === 'none') cls += '';
             else cls += 'red';
             return `
-              <div class="${cls}">
+              <div class="${cls}" title="${wk.missed > 0 ? `${wk.missed} missed scheduled day(s)` : ''}">
                 <div style="font-size:0.75rem;opacity:0.85;">${wk.w}</div>
-                <div style="font-size:0.875rem;font-weight:700;margin-top:2px;">${wk.c}/${wk.t}</div>
+                <div style="font-size:0.875rem;font-weight:700;margin-top:2px;">${wk.c}/${wk.t}${wk.missed > 0 ? '!' : ''}</div>
               </div>
             `;
           }).join('')}
@@ -1941,16 +2347,19 @@ const App = (() => {
     `;
   }
 
-  // --- SCREEN 4: GOALS (STRICTLY FITNESS TARGETS) ---
+  // --- SCREEN 4: GOALS (STRICTLY FITNESS TARGETS & SCHEDULES) ---
   function renderGoalsScreen() {
+    const gymDays = getGymBaseDays();
+    const isGymDaily = state.gymScheduleMode === 'daily';
+
     return `
       <div class="goals-split">
-      <!-- 1. Daily Home Exercise Targets -->
+      <!-- 1. Home Exercise Targets & Schedules -->
       <section class="surface-card card-pad">
         <div class="card-head">
           <div>
-            <div class="section-heading">Daily Home Exercise Targets</div>
-            <div class="section-sub">Edit daily targets, reorder, or add new exercises (${state.exercises.length} configured)</div>
+            <div class="section-heading">Home Exercise Targets &amp; Schedules</div>
+            <div class="section-sub">Defaults to Daily; pick Custom to set days/wk &amp; specific weekdays (${state.exercises.length} configured)</div>
           </div>
         </div>
 
@@ -1958,33 +2367,78 @@ const App = (() => {
           ${state.exercises.map((ex, idx) => {
             const isConfirming = ui.confirmRemoveExId === ex.id;
             const isMoved = pendingFx && pendingFx.type === 'goal-move' && pendingFx.exId === ex.id;
+            const isDaily = ex.scheduleMode !== 'custom';
+            const schedDays = getExerciseScheduleDays(ex);
+            const schedCount = isDaily ? 7 : Math.max(1, Math.min(6, Number(ex.scheduleTargetCount) || schedDays.length || 3));
+            const schedLabel = formatScheduleSummary(ex.scheduleMode, schedDays, schedCount);
+
             return `
-              <div class="surface-inset editor-row ${isMoved ? 'fx-row-move' : ''}">
-                <div style="display:flex;align-items:center;gap:6px;min-width:0;">
-                  <div style="display:flex;flex-direction:column;gap:2px;">
-                    <button class="mini-btn" style="padding:1px 5px;font-size:0.65rem;line-height:1;"
-                            ${idx === 0 ? 'disabled' : ''}
-                            onclick="App.MoveExercise('${ex.id}', -1)" title="Move Up">&uarr;</button>
-                    <button class="mini-btn" style="padding:1px 5px;font-size:0.65rem;line-height:1;"
-                            ${idx === state.exercises.length - 1 ? 'disabled' : ''}
-                            onclick="App.MoveExercise('${ex.id}', 1)" title="Move Down">&darr;</button>
+              <div class="surface-inset goal-ex-card ${isMoved ? 'fx-row-move' : ''}">
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+                  <div style="display:flex;align-items:center;gap:6px;min-width:0;">
+                    <div style="display:flex;flex-direction:column;gap:2px;">
+                      <button class="mini-btn" style="padding:1px 5px;font-size:0.65rem;line-height:1;"
+                              ${idx === 0 ? 'disabled' : ''}
+                              onclick="App.MoveExercise('${ex.id}', -1)" title="Move Up">&uarr;</button>
+                      <button class="mini-btn" style="padding:1px 5px;font-size:0.65rem;line-height:1;"
+                              ${idx === state.exercises.length - 1 ? 'disabled' : ''}
+                              onclick="App.MoveExercise('${ex.id}', 1)" title="Move Down">&darr;</button>
+                    </div>
+                    <span class="ex-title" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(ex.name)}</span>
                   </div>
-                  <span class="ex-title" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(ex.name)}</span>
+                  <div class="editor-controls">
+                    <input type="number" min="1" value="${ex.target}"
+                           class="num-input text-emerald tabular-nums"
+                           style="width:64px;padding:4px 8px;"
+                           onchange="App.UpdateTarget('${ex.id}', this.value)" />
+                    <span class="text-muted" style="font-size:0.75rem;width:32px;">${escapeHtml(ex.unit)}</span>
+                    ${isConfirming ? `
+                      <button class="mini-btn" style="color:var(--red-400);border-color:rgba(239,68,68,0.5);font-weight:700;"
+                              onclick="App.RemoveExercise('${ex.id}')">Confirm?</button>
+                    ` : `
+                      <button class="mini-btn" style="color:var(--text-slate-500);"
+                              onclick="App.RemoveExercise('${ex.id}')">Remove</button>
+                    `}
+                  </div>
                 </div>
-                <div class="editor-controls">
-                  <input type="number" min="1" value="${ex.target}"
-                         class="num-input text-emerald tabular-nums"
-                         style="width:64px;padding:4px 8px;"
-                         onchange="App.UpdateTarget('${ex.id}', this.value)" />
-                  <span class="text-muted" style="font-size:0.75rem;width:32px;">${escapeHtml(ex.unit)}</span>
-                  ${isConfirming ? `
-                    <button class="mini-btn" style="color:var(--red-400);border-color:rgba(239,68,68,0.5);font-weight:700;"
-                            onclick="App.RemoveExercise('${ex.id}')">Confirm?</button>
-                  ` : `
-                    <button class="mini-btn" style="color:var(--text-slate-500);"
-                            onclick="App.RemoveExercise('${ex.id}')">Remove</button>
-                  `}
+
+                <div class="sched-bar">
+                  <span style="font-size:0.72rem;font-weight:600;color:var(--text-slate-400);">
+                    Schedule: <strong style="color:var(--emerald-400);">${escapeHtml(schedLabel)}</strong>
+                  </span>
+                  <div class="seg-ctrl" style="padding:2px;">
+                    <button class="seg-btn ${isDaily ? 'active' : ''}"
+                            onclick="App.SetExerciseScheduleMode('${ex.id}', 'daily')">Daily</button>
+                    <button class="seg-btn ${!isDaily ? 'active' : ''}"
+                            onclick="App.SetExerciseScheduleMode('${ex.id}', 'custom')">Custom</button>
+                  </div>
                 </div>
+
+                ${!isDaily ? `
+                  <div class="sched-custom-panel">
+                    <div class="sched-count-row">
+                      <span style="font-size:0.7rem;font-weight:600;color:var(--text-slate-400);">Days / week</span>
+                      <div style="display:flex;align-items:center;gap:4px;">
+                        <button class="mini-btn" style="padding:2px 7px;"
+                                ${schedCount <= 1 ? 'disabled' : ''}
+                                onclick="App.SetExerciseScheduleCount('${ex.id}', ${schedCount - 1})">&minus;</button>
+                        <input type="number" min="1" max="7" value="${schedCount}"
+                               class="num-input text-emerald tabular-nums"
+                               style="width:48px;padding:2px 6px;font-size:0.75rem;"
+                               onchange="App.SetExerciseScheduleCount('${ex.id}', this.value)" />
+                        <button class="mini-btn" style="padding:2px 7px;"
+                                onclick="App.SetExerciseScheduleCount('${ex.id}', ${schedCount + 1})" title="${schedCount >= 6 ? '7 = Daily' : 'Increase days'}">+</button>
+                      </div>
+                      <span class="tabular-nums text-muted" style="font-size:0.68rem;">${schedDays.length}/${schedCount} weekdays</span>
+                    </div>
+                    <div class="day-7-pills">
+                      ${DAY_LABELS_SHORT.map((lbl, dow) => `
+                        <button class="day-pill ${schedDays.includes(dow) ? 'on' : ''}"
+                                onclick="App.ToggleExerciseScheduleDay('${ex.id}', ${dow})">${lbl}</button>
+                      `).join('')}
+                    </div>
+                  </div>
+                ` : ''}
               </div>
             `;
           }).join('')}
@@ -2009,25 +2463,67 @@ const App = (() => {
         </div>
       </section>
 
-      <!-- 2. Weekly Gym Target -->
+      <!-- 2. Weekly Gym Schedule -->
       <section class="surface-card card-pad">
         <div class="card-head">
           <div>
-            <div class="section-heading">Weekly Gym Target</div>
-            <div class="section-sub">Days per week required for a Green Gym Week</div>
+            <div class="section-heading">Weekly Gym Schedule</div>
+            <div class="section-sub">Strict accountability — pick your committed gym days (same-week shifts allowed on Today/Calendar)</div>
           </div>
-          <span class="text-sky tabular-nums" style="font-size:0.75rem;font-weight:700;">${state.weeklyGymTarget} days / wk</span>
+          <span class="text-sky tabular-nums" style="font-size:0.75rem;font-weight:700;">${escapeHtml(formatScheduleSummary(state.gymScheduleMode, gymDays, state.weeklyGymTarget))}</span>
         </div>
 
-        <div class="week-7-grid" style="margin-bottom:0;">
-          ${[1, 2, 3, 4, 5, 6, 7].map(n => `
-            <button class="week-day-btn ${state.weeklyGymTarget === n ? 'visited' : ''} tabular-nums smooth-ui"
-                    style="padding:6px 0;font-weight:700;"
-                    onclick="App.SetWeeklyGymTarget(${n})">
-              ${n}d
-            </button>
-          `).join('')}
+        <div class="sched-bar" style="padding-top:0;border-top:none;margin-bottom:10px;">
+          <span style="font-size:0.72rem;font-weight:600;color:var(--text-slate-400);">Gym Frequency</span>
+          <div class="seg-ctrl" style="padding:2px;">
+            <button class="seg-btn ${isGymDaily ? 'active' : ''}"
+                    onclick="App.SetGymScheduleMode('daily')">Daily (7d)</button>
+            <button class="seg-btn ${!isGymDaily ? 'active' : ''}"
+                    onclick="App.SetGymScheduleMode('custom')">Custom</button>
+          </div>
         </div>
+
+        ${isGymDaily ? `
+          <div class="surface-inset" style="padding:10px;font-size:0.75rem;color:var(--text-slate-300);">
+            Committed every day (<strong class="text-sky">Sun–Sat</strong>). Switch to <strong>Custom</strong> to pick specific gym days.
+          </div>
+        ` : `
+          <div class="sched-custom-panel" style="gap:8px;padding:10px;">
+            <div class="sched-count-row">
+              <span style="font-size:0.72rem;font-weight:600;color:var(--text-slate-400);">Gym days / week</span>
+              <div style="display:flex;align-items:center;gap:4px;">
+                <button class="mini-btn" style="padding:2px 7px;"
+                        ${state.weeklyGymTarget <= 1 ? 'disabled' : ''}
+                        onclick="App.SetWeeklyGymTarget(${state.weeklyGymTarget - 1})">&minus;</button>
+                <input type="number" min="1" max="7" value="${state.weeklyGymTarget}"
+                       class="num-input text-sky tabular-nums"
+                       style="width:48px;padding:2px 6px;font-size:0.75rem;"
+                       onchange="App.SetWeeklyGymTarget(this.value)" />
+                <button class="mini-btn" style="padding:2px 7px;"
+                        onclick="App.SetWeeklyGymTarget(${state.weeklyGymTarget + 1})" title="${state.weeklyGymTarget >= 6 ? '7 = Daily' : 'Increase days'}">+</button>
+              </div>
+              <span class="tabular-nums text-sky" style="font-size:0.7rem;font-weight:700;">Committed ${gymDays.length}/${state.weeklyGymTarget} days</span>
+            </div>
+
+            <div class="week-7-grid" style="margin-bottom:2px;">
+              ${[1, 2, 3, 4, 5, 6, 7].map(n => `
+                <button class="week-day-btn ${state.weeklyGymTarget === n ? 'visited' : ''} tabular-nums smooth-ui"
+                        style="padding:5px 0;font-weight:700;"
+                        onclick="App.SetWeeklyGymTarget(${n})">
+                  ${n}d
+                </button>
+              `).join('')}
+            </div>
+
+            <div style="font-size:0.7rem;font-weight:600;color:var(--text-slate-400);">Committed Gym Weekdays</div>
+            <div class="day-7-pills">
+              ${DAY_LABELS_SHORT.map((lbl, dow) => `
+                <button class="day-pill ${gymDays.includes(dow) ? 'gym-on' : ''}"
+                        onclick="App.ToggleGymScheduleDay(${dow})">${lbl}</button>
+              `).join('')}
+            </div>
+          </div>
+        `}
       </section>
       </div>
     `;
@@ -2580,7 +3076,7 @@ const App = (() => {
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=15').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=16').then((reg) => {
         if (reg && reg.update) reg.update();
       }).catch(() => {});
     });
@@ -2687,9 +3183,14 @@ const App = (() => {
         showToast('Locked: entries older than 7 days cannot be edited');
         return;
       }
+      const dueExercises = getDueExercisesForDate(dateKey);
+      if (dueExercises.length === 0) {
+        showToast('Rest day — no scheduled exercises due');
+        return;
+      }
       const log = getDayLog(dateKey);
       const hitIds = [];
-      state.exercises.forEach(ex => {
+      dueExercises.forEach(ex => {
         const cur = Number(log.exercises[ex.id]) || 0;
         if (cur < ex.target) {
           log.exercises[ex.id] = ex.target;
@@ -2698,7 +3199,7 @@ const App = (() => {
       });
       pendingFx = { type: 'complete-all', dateKey, hitIds };
       saveState(true);
-      showToast(`All ${state.exercises.length} daily targets marked complete`);
+      showToast(`All ${dueExercises.length} due target${dueExercises.length === 1 ? '' : 's'} marked complete`);
     },
     BumpExercise(dateKey, exId, delta) {
       if (isDateLocked(dateKey)) {
@@ -2811,11 +3312,19 @@ const App = (() => {
       const target = Math.max(1, Number(targetEl ? targetEl.value : 30) || 30);
       const unit = unitEl ? unitEl.value : 'reps';
       const id = 'ex_' + Date.now();
-      state.exercises.push({ id, name, target, unit });
+      state.exercises.push({
+        id,
+        name,
+        target,
+        unit,
+        scheduleMode: 'daily',
+        scheduleTargetCount: 7,
+        scheduleDays: [0, 1, 2, 3, 4, 5, 6]
+      });
       ui.confirmRemoveExId = null;
       pendingFx = { type: 'goal-move', exId: id };
       saveState(true);
-      showToast(`Added ${name} (${target} ${unit})`);
+      showToast(`Added ${name} (${target} ${unit} • Daily)`);
     },
     RemoveExercise(id) {
       if (state.exercises.length <= 1) {
@@ -2836,10 +3345,220 @@ const App = (() => {
       saveState(true);
       showToast('Exercise removed');
     },
-    SetWeeklyGymTarget(n) {
-      state.weeklyGymTarget = Number(n) || 4;
+    SetExerciseScheduleMode(exId, mode) {
+      const ex = state.exercises.find(e => e.id === exId);
+      if (!ex) return;
+      if (mode === 'daily') {
+        ex.scheduleMode = 'daily';
+        ex.scheduleTargetCount = 7;
+        ex.scheduleDays = [0, 1, 2, 3, 4, 5, 6];
+        saveState(true);
+        showToast(`${ex.name}: Daily schedule`);
+      } else {
+        const cnt = (ex.scheduleTargetCount >= 1 && ex.scheduleTargetCount <= 6) ? ex.scheduleTargetCount : 3;
+        const base = (Array.isArray(ex.scheduleDays) && ex.scheduleDays.length < 7)
+          ? ex.scheduleDays
+          : defaultDaysForCount(cnt);
+        ex.scheduleMode = 'custom';
+        ex.scheduleTargetCount = cnt;
+        ex.scheduleDays = normalizeDaysList(base, cnt).slice(0, cnt);
+        while (ex.scheduleDays.length < cnt) {
+          const next = DEFAULT_CUSTOM_PATTERN.find(d => !ex.scheduleDays.includes(d));
+          if (next === undefined) break;
+          ex.scheduleDays.push(next);
+        }
+        saveState(true);
+        showToast(`${ex.name}: Custom ${formatScheduleSummary('custom', ex.scheduleDays, cnt)}`);
+      }
+    },
+    SetExerciseScheduleCount(exId, count) {
+      const ex = state.exercises.find(e => e.id === exId);
+      if (!ex) return;
+      const raw = Math.round(Number(count) || 3);
+      if (raw >= 7) {
+        App.SetExerciseScheduleMode(exId, 'daily');
+        return;
+      }
+      const c = Math.max(1, Math.min(6, raw));
+      const base = (ex.scheduleMode === 'custom' && Array.isArray(ex.scheduleDays) && ex.scheduleDays.length < 7)
+        ? ex.scheduleDays
+        : defaultDaysForCount(c);
+      const nextDays = normalizeDaysList(base, c).slice(0, c);
+      while (nextDays.length < c) {
+        const next = DEFAULT_CUSTOM_PATTERN.find(d => !nextDays.includes(d));
+        if (next === undefined) break;
+        nextDays.push(next);
+      }
+      ex.scheduleMode = 'custom';
+      ex.scheduleTargetCount = c;
+      ex.scheduleDays = nextDays;
       saveState(true);
-      showToast(`Weekly gym target set to ${state.weeklyGymTarget}d/wk`);
+      showToast(`${ex.name}: ${c}d/wk (${nextDays.slice().sort((a, b) => a - b).map(d => DAY_LABELS_SHORT[d]).join(', ')})`);
+    },
+    ToggleExerciseScheduleDay(exId, dow) {
+      const ex = state.exercises.find(e => e.id === exId);
+      if (!ex) return;
+      const d = Number(dow);
+      if (!Number.isInteger(d) || d < 0 || d > 6) return;
+      const targetCount = Math.max(1, Math.min(6, Number(ex.scheduleTargetCount) || 3));
+      let days = (ex.scheduleMode === 'custom' && Array.isArray(ex.scheduleDays))
+        ? normalizeDaysList(ex.scheduleDays, targetCount)
+        : defaultDaysForCount(targetCount);
+      if (days.includes(d)) {
+        if (days.length <= 1) {
+          showToast('Keep at least 1 scheduled day');
+          return;
+        }
+        days = days.filter(x => x !== d);
+      } else {
+        while (days.length >= targetCount) days.shift();
+        days.push(d);
+      }
+      ex.scheduleMode = 'custom';
+      ex.scheduleTargetCount = targetCount;
+      ex.scheduleDays = days;
+      saveState(true);
+    },
+    SetGymScheduleMode(mode) {
+      if (mode === 'daily') {
+        state.gymScheduleMode = 'daily';
+        state.weeklyGymTarget = 7;
+        state.gymScheduleDays = [0, 1, 2, 3, 4, 5, 6];
+        saveState(true);
+        showToast('Gym schedule: Daily (7d/wk)');
+      } else {
+        const cnt = (state.weeklyGymTarget >= 1 && state.weeklyGymTarget <= 6) ? state.weeklyGymTarget : 4;
+        const base = (Array.isArray(state.gymScheduleDays) && state.gymScheduleDays.length < 7)
+          ? state.gymScheduleDays
+          : defaultDaysForCount(cnt);
+        const nextDays = normalizeDaysList(base, cnt).slice(0, cnt);
+        while (nextDays.length < cnt) {
+          const next = DEFAULT_CUSTOM_PATTERN.find(d => !nextDays.includes(d));
+          if (next === undefined) break;
+          nextDays.push(next);
+        }
+        state.gymScheduleMode = 'custom';
+        state.weeklyGymTarget = cnt;
+        state.gymScheduleDays = nextDays;
+        saveState(true);
+        showToast(`Gym schedule: ${formatScheduleSummary('custom', nextDays, cnt)}`);
+      }
+    },
+    SetWeeklyGymTarget(n) {
+      const raw = Math.round(Number(n) || 4);
+      if (raw >= 7) {
+        App.SetGymScheduleMode('daily');
+        return;
+      }
+      const c = Math.max(1, Math.min(6, raw));
+      const base = (state.gymScheduleMode === 'custom' && Array.isArray(state.gymScheduleDays) && state.gymScheduleDays.length < 7)
+        ? state.gymScheduleDays
+        : defaultDaysForCount(c);
+      const nextDays = normalizeDaysList(base, c).slice(0, c);
+      while (nextDays.length < c) {
+        const next = DEFAULT_CUSTOM_PATTERN.find(d => !nextDays.includes(d));
+        if (next === undefined) break;
+        nextDays.push(next);
+      }
+      state.gymScheduleMode = 'custom';
+      state.weeklyGymTarget = c;
+      state.gymScheduleDays = nextDays;
+      saveState(true);
+      showToast(`Weekly gym schedule: ${formatScheduleSummary('custom', nextDays, c)}`);
+    },
+    ToggleGymScheduleDay(dow) {
+      const d = Number(dow);
+      if (!Number.isInteger(d) || d < 0 || d > 6) return;
+      const targetCount = Math.max(1, Math.min(6, Number(state.weeklyGymTarget) || 4));
+      let days = (state.gymScheduleMode === 'custom' && Array.isArray(state.gymScheduleDays))
+        ? normalizeDaysList(state.gymScheduleDays, targetCount)
+        : defaultDaysForCount(targetCount);
+      if (days.includes(d)) {
+        if (days.length <= 1) {
+          showToast('Keep at least 1 scheduled gym day');
+          return;
+        }
+        days = days.filter(x => x !== d);
+      } else {
+        while (days.length >= targetCount) days.shift();
+        days.push(d);
+      }
+      state.gymScheduleMode = 'custom';
+      state.weeklyGymTarget = targetCount;
+      state.gymScheduleDays = days;
+      saveState(true);
+    },
+    RescheduleGymDay(fromDate, toDate) {
+      if (!fromDate || !toDate || fromDate === toDate) return;
+      const today = toDateKey();
+      if (diffDaysBetween(today, fromDate) > EDIT_WINDOW_DAYS || diffDaysBetween(today, toDate) > EDIT_WINDOW_DAYS) {
+        showToast('Locked: entries older than 7 days cannot be rescheduled');
+        return;
+      }
+      const monKey = getMondayKey(fromDate);
+      if (monKey !== getMondayKey(toDate)) {
+        showToast('Gym reschedules must stay within the same Sun–Sat week');
+        return;
+      }
+      const weekGym = getWeekGymSummary(monKey);
+      const fromSlot = weekGym.days.find(s => s.dateKey === fromDate);
+      const toSlot = weekGym.days.find(s => s.dateKey === toDate);
+      if (!fromSlot || !fromSlot.scheduled) {
+        showToast('Selected source day is not a scheduled gym day');
+        return;
+      }
+      if (fromSlot.visited) {
+        showToast('Cannot reschedule an already visited gym day');
+        return;
+      }
+      if (!toSlot || toSlot.scheduled || toSlot.visited) {
+        showToast('Target day must be an unscheduled, unvisited day this week');
+        return;
+      }
+      if (!state.gymReschedules || typeof state.gymReschedules !== 'object') {
+        state.gymReschedules = {};
+      }
+      const list = Array.isArray(state.gymReschedules[monKey]) ? [...state.gymReschedules[monKey]] : [];
+      const chainIdx = list.findIndex(r => r && r.to === fromDate);
+      if (chainIdx >= 0) {
+        const origFrom = list[chainIdx].from;
+        if (origFrom === toDate) {
+          list.splice(chainIdx, 1);
+        } else {
+          list[chainIdx] = { from: origFrom, to: toDate };
+        }
+      } else {
+        list.push({ from: fromDate, to: toDate });
+      }
+      if (list.length > 0) state.gymReschedules[monKey] = list;
+      else delete state.gymReschedules[monKey];
+
+      pendingFx = { type: 'gym-toggle', dateKey: toDate };
+      saveState(true);
+      const fDow = DAY_LABELS_SHORT[parseDateKey(fromDate).getDay()];
+      const tDow = DAY_LABELS_SHORT[parseDateKey(toDate).getDay()];
+      showToast(`Shifted gym commitment: ${fDow} → ${tDow}`);
+    },
+    RescheduleGymFromControls(mondayKey) {
+      const fromEl = document.getElementById('resched-from-' + mondayKey);
+      const toEl = document.getElementById('resched-to-' + mondayKey);
+      if (!fromEl || !toEl || !fromEl.value || !toEl.value) return;
+      App.RescheduleGymDay(fromEl.value, toEl.value);
+    },
+    UndoGymReschedule(mondayKey, toDate) {
+      if (!state.gymReschedules || !Array.isArray(state.gymReschedules[mondayKey])) return;
+      const entry = state.gymReschedules[mondayKey].find(r => r && r.to === toDate);
+      const today = toDateKey();
+      if (entry && (diffDaysBetween(today, entry.from) > EDIT_WINDOW_DAYS || diffDaysBetween(today, entry.to) > EDIT_WINDOW_DAYS)) {
+        showToast('Locked: entries older than 7 days cannot be modified');
+        return;
+      }
+      const nextList = state.gymReschedules[mondayKey].filter(r => !(r && r.to === toDate));
+      if (nextList.length > 0) state.gymReschedules[mondayKey] = nextList;
+      else delete state.gymReschedules[mondayKey];
+      pendingFx = { type: 'gym-toggle', dateKey: toDate };
+      saveState(true);
+      showToast('Gym reschedule reverted');
     },
     SaveProfileName() {
       const el = document.getElementById('profile-name-input');
@@ -3072,7 +3791,7 @@ const App = (() => {
           const parsed = JSON.parse(e.target.result);
           const payload = parsed.payload || parsed;
           if (payload && Array.isArray(payload.exercises)) {
-            state = {
+            state = normalizeState({
               ...createDefaultState(),
               ...payload,
               syncProvider: state.syncProvider,
@@ -3083,7 +3802,7 @@ const App = (() => {
               appLockEnabled: state.appLockEnabled,
               biometricEnabled: state.biometricEnabled,
               biometricCredId: state.biometricCredId
-            };
+            });
             saveState(true);
             showToast('Imported backup');
           } else {
@@ -3120,6 +3839,7 @@ const App = (() => {
       }
       const today = toDateKey();
       state.logs = {};
+      state.gymReschedules = {};
       state.trackingStartDate = today;
       ui.activeDate = today;
       ui.selectedCalDate = today;

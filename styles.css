@@ -517,13 +517,45 @@ input[type="number"] {
   font-weight: 700;
 }
 
+.week-day-btn.gym-scheduled:not(.visited) {
+  border-color: rgba(56, 189, 248, 0.55);
+  border-style: dashed;
+  color: var(--sky-300);
+}
+
+.week-day-btn.gym-missed {
+  background-color: rgba(239, 68, 68, 0.14);
+  border-color: rgba(239, 68, 68, 0.65);
+  color: var(--red-300);
+}
+
+.week-day-btn.gym-moved {
+  border-style: dotted;
+  border-color: var(--border-slate);
+  color: var(--text-slate-500);
+}
+
 .week-day-btn.active-ring {
   box-shadow: 0 0 0 1px var(--text-white);
 }
 
 .week-day-btn.locked-day {
-  opacity: 0.35;
+  opacity: 0.42;
   pointer-events: none;
+}
+
+.week-day-btn.locked-day.gym-scheduled {
+  opacity: 0.78;
+}
+
+.gym-slot-tag {
+  display: block;
+  margin-top: 3px;
+  font-size: 0.56rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  line-height: 1;
 }
 
 .gym-dot {
@@ -617,6 +649,12 @@ input[type="number"] {
   font-weight: 700;
 }
 
+.cal-cell.rest {
+  background-color: var(--bg-inset);
+  border: 1px dashed var(--border-slate);
+  color: var(--text-slate-400);
+}
+
 .cal-cell.other-month {
   opacity: 0.42;
 }
@@ -631,6 +669,24 @@ input[type="number"] {
   height: 8px;
   border-radius: 50%;
   background-color: var(--sky-300);
+  box-shadow: 0 0 0 1px #020617;
+  align-self: flex-end;
+}
+
+.cal-gym-due-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1.5px solid var(--sky-300);
+  background-color: rgba(14, 165, 233, 0.2);
+  align-self: flex-end;
+}
+
+.cal-gym-miss-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background-color: var(--red-500);
   box-shadow: 0 0 0 1px #020617;
   align-self: flex-end;
 }
@@ -1103,6 +1159,152 @@ input[type="number"] {
 
 .danger-btn:hover {
   background-color: var(--red-500);
+}
+
+/* Per-Exercise & Gym Schedule Controls + Reschedule Strip */
+.goal-ex-card {
+  padding: 9px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sched-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-inset);
+}
+
+.sched-custom-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 7px 8px;
+  border-radius: 3px;
+  background-color: var(--bg-base);
+  border: 1px solid var(--border-inset);
+}
+
+.sched-count-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.day-7-pills {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.day-pill {
+  padding: 5px 2px;
+  border-radius: 2px;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-inset);
+  color: var(--text-slate-500);
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-align: center;
+  transition: transform 0.16s cubic-bezier(0.22, 1, 0.36, 1),
+              background-color 0.2s ease,
+              border-color 0.2s ease,
+              color 0.2s ease;
+}
+
+.day-pill:hover {
+  border-color: var(--border-slate);
+  color: var(--text-slate-200);
+}
+
+.day-pill:active {
+  transform: scale(0.95);
+}
+
+.day-pill.on {
+  background-color: rgba(16, 185, 129, 0.18);
+  border-color: rgba(16, 185, 129, 0.65);
+  color: var(--emerald-300);
+}
+
+.day-pill.gym-on {
+  background-color: rgba(14, 165, 233, 0.2);
+  border-color: var(--sky-400);
+  color: var(--sky-300);
+}
+
+.resched-box {
+  margin-top: 10px;
+  padding: 9px 10px;
+  border-radius: 3px;
+  background-color: var(--bg-inset);
+  border: 1px solid var(--border-inset);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.resched-alert {
+  border-color: rgba(239, 68, 68, 0.45);
+  background-color: rgba(239, 68, 68, 0.06);
+}
+
+.resched-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 7px;
+  border-radius: 2px;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-slate);
+  font-size: 0.68rem;
+  color: var(--text-slate-300);
+}
+
+.optional-divider {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border-inset);
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-slate-500);
+}
+
+.due-badge {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 2px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background-color: rgba(14, 165, 233, 0.16);
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  color: var(--sky-300);
+}
+
+.rest-badge {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 2px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background-color: var(--bg-base);
+  border: 1px solid var(--border-inset);
+  color: var(--text-slate-500);
 }
 
 /* Light Mode Surface Refinements */

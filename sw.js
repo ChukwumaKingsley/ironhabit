@@ -1,9 +1,9 @@
-const CACHE_NAME = 'iron-habit-v15';
+const CACHE_NAME = 'iron-habit-v16';
 const ASSETS = [
   './',
   './index.html',
-  './styles.css?v=15',
-  './app.js?v=15',
+  './styles.css?v=16',
+  './app.js?v=16',
   './manifest.json',
   './icon.svg'
 ];
