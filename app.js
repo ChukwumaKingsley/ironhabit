@@ -1962,30 +1962,35 @@ const App = (() => {
       {
         id: 'profile',
         label: 'Profile & Display',
+        shortLabel: 'Profile',
         sub: `${escapeHtml((state.profileName || 'Kingsley').trim())} • ${(state.themeMode || 'dark').toUpperCase()}`,
         icon: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square"><path d="M20 21v-2a4 4 0 0 0-3-3.87"></path><path d="M4 21v-2a4 4 0 0 1 3-3.87"></path><circle cx="12" cy="7" r="4"></circle></svg>'
       },
       {
         id: 'reminders',
         label: 'Smart Reminders',
+        shortLabel: 'Alerts',
         sub: state.remindersEnabled ? `${state.morningReminderTime || '08:00'} & ${state.eveningReminderTime || '20:00'}` : 'Off',
         icon: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>'
       },
       {
         id: 'security',
         label: 'Security & Lock',
+        shortLabel: 'Security',
         sub: bioActive ? 'Biometrics' : hasPasskey ? 'Passkey' : 'Setup',
         icon: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square"><rect x="4" y="11" width="16" height="10" rx="1"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg>'
       },
       {
         id: 'sync',
         label: 'Cloud Sync',
+        shortLabel: 'Sync',
         sub: cloudReady ? (state.syncProvider === 'gist' ? 'Gist' : 'Drive') : 'Local',
         icon: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"></path></svg>'
       },
       {
         id: 'data',
         label: 'Data & Reset',
+        shortLabel: 'Data',
         sub: `${totalDaysLogged}d logged`,
         icon: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"></path><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"></path></svg>'
       }
@@ -2282,10 +2287,12 @@ const App = (() => {
           <nav class="settings-side-nav">
             ${navItems.map(item => `
               <button class="settings-nav-btn smooth-ui ${sec === item.id ? 'active' : ''}"
+                      data-settings-tab="${item.id}"
                       onclick="App.SetSettingsSection('${item.id}')">
                 <span class="settings-nav-icon">${item.icon}</span>
                 <span class="settings-nav-text">
-                  <span class="settings-nav-label">${item.label}</span>
+                  <span class="settings-nav-label settings-nav-label-full">${item.label}</span>
+                  <span class="settings-nav-label settings-nav-label-short">${item.shortLabel}</span>
                   <span class="settings-nav-sub tabular-nums">${item.sub}</span>
                 </span>
               </button>
@@ -2300,16 +2307,41 @@ const App = (() => {
     `;
   }
 
+  let lastRenderedSettingsSection = null;
+
   function renderSettingsOverlay() {
     const overlay = document.getElementById('settings-overlay');
     if (!overlay) return;
     if (!ui.settingsOpen) {
       overlay.style.display = 'none';
       overlay.innerHTML = '';
+      lastRenderedSettingsSection = null;
       return;
     }
+    const prevNav = overlay.querySelector('.settings-side-nav');
+    const prevPane = overlay.querySelector('.settings-content-pane');
+    const prevNavLeft = prevNav ? prevNav.scrollLeft : 0;
+    const prevNavTop = prevNav ? prevNav.scrollTop : 0;
+    const sameSection = lastRenderedSettingsSection === (ui.settingsSection || 'profile');
+    const prevPaneTop = (sameSection && prevPane) ? prevPane.scrollTop : 0;
+
     overlay.style.display = 'flex';
     overlay.innerHTML = renderSettingsScreen();
+    lastRenderedSettingsSection = ui.settingsSection || 'profile';
+
+    const nextNav = overlay.querySelector('.settings-side-nav');
+    if (nextNav) {
+      nextNav.scrollLeft = prevNavLeft;
+      nextNav.scrollTop = prevNavTop;
+      const activeBtn = nextNav.querySelector('.settings-nav-btn.active');
+      if (activeBtn && typeof activeBtn.scrollIntoView === 'function') {
+        activeBtn.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      }
+    }
+    const nextPane = overlay.querySelector('.settings-content-pane');
+    if (nextPane && sameSection) {
+      nextPane.scrollTop = prevPaneTop;
+    }
   }
 
   function escapeHtml(str) {
@@ -2360,7 +2392,7 @@ const App = (() => {
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=12').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=13').then((reg) => {
         if (reg && reg.update) reg.update();
       }).catch(() => {});
     });

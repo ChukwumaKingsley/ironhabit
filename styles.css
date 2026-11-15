@@ -1233,23 +1233,25 @@ html[data-theme="light"] .settings-overlay {
   flex-shrink: 0;
   background-color: var(--bg-chrome);
   border-bottom: 1px solid var(--border-card);
-  padding: 8px 10px;
-  display: flex;
-  flex-direction: row;
-  gap: 6px;
-  overflow-x: auto;
+  padding: 6px 8px;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 4px;
+  overflow: hidden;
 }
 
 .settings-nav-btn {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
+  justify-content: center;
+  gap: 4px;
+  padding: 7px 2px 6px;
   border-radius: 4px;
   border: 1px solid transparent;
   color: var(--text-slate-400);
-  text-align: left;
-  flex-shrink: 0;
+  text-align: center;
+  min-width: 0;
   position: relative;
 }
 
@@ -1261,6 +1263,7 @@ html[data-theme="light"] .settings-overlay {
 .settings-nav-btn.active {
   background-color: var(--bg-active);
   border-color: var(--border-slate);
+  border-bottom: 2px solid var(--emerald-400);
   color: var(--text-white);
 }
 
@@ -1279,17 +1282,31 @@ html[data-theme="light"] .settings-overlay {
 .settings-nav-text {
   display: flex;
   flex-direction: column;
+  align-items: center;
   min-width: 0;
+  width: 100%;
 }
 
 .settings-nav-label {
-  font-size: 0.76rem;
+  font-size: 0.66rem;
   font-weight: 700;
-  line-height: 1.2;
+  line-height: 1.15;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.settings-nav-label-full {
+  display: none;
+}
+
+.settings-nav-label-short {
+  display: block;
 }
 
 .settings-nav-sub {
+  display: none;
   font-size: 0.66rem;
   color: var(--text-slate-500);
   line-height: 1.2;
@@ -1374,6 +1391,7 @@ html[data-theme="light"] .settings-overlay {
   }
 
   .settings-side-nav {
+    display: flex;
     flex-direction: column;
     border-bottom: none;
     border-right: 1px solid var(--border-card);
@@ -1384,12 +1402,39 @@ html[data-theme="light"] .settings-overlay {
   }
 
   .settings-nav-btn {
+    flex-direction: row;
+    justify-content: flex-start;
+    align-items: center;
+    text-align: left;
+    gap: 8px;
     width: 100%;
     padding: 9px 10px;
   }
 
   .settings-nav-btn.active {
+    border-bottom-color: var(--border-slate);
     border-left: 2px solid var(--emerald-400);
+  }
+
+  .settings-nav-text {
+    align-items: flex-start;
+  }
+
+  .settings-nav-label {
+    font-size: 0.76rem;
+  }
+
+  .settings-nav-label-full {
+    display: block;
+  }
+
+  .settings-nav-label-short {
+    display: none;
+  }
+
+  .settings-nav-sub {
+    display: block;
+    max-width: 100%;
   }
 
   .settings-content-pane {
