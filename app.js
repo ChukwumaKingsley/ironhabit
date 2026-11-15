@@ -1786,6 +1786,7 @@ const App = (() => {
     }
 
     const selKey = ui.selectedCalDate;
+    const locked = isDateLocked(selKey);
     const selStatus = getDayStatus(selKey);
     const selGym = Boolean(state.logs[selKey] && state.logs[selKey].gym);
     const selMonKey = getMondayKey(selKey);
@@ -1794,7 +1795,6 @@ const App = (() => {
     const selMissedToShift = (!locked && selGymSlot && !selGymSlot.scheduled && !selGymSlot.visited)
       ? selWeekGym.days.find(s => s.missed && !isDateLocked(s.dateKey))
       : null;
-    const locked = isDateLocked(selKey);
     const calMonthClass = (pendingFx && pendingFx.type === 'cal-month')
       ? (pendingFx.dir > 0 ? 'fx-slide-next' : 'fx-slide-prev')
       : '';
@@ -3076,7 +3076,7 @@ const App = (() => {
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=16').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=17').then((reg) => {
         if (reg && reg.update) reg.update();
       }).catch(() => {});
     });
