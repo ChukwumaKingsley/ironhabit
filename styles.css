@@ -125,7 +125,7 @@ input[type="number"] {
 }
 
 .smooth-ui {
-  transition: all 0.14s ease;
+  transition: all 0.24s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .surface-base {
@@ -450,7 +450,7 @@ input[type="number"] {
 
 .progress-fill {
   height: 100%;
-  transition: width 0.38s cubic-bezier(0.22, 1, 0.36, 1), background-color 0.26s ease;
+  transition: width 0.56s cubic-bezier(0.22, 1, 0.36, 1), background-color 0.38s ease;
   will-change: width;
 }
 
@@ -1035,7 +1035,7 @@ input[type="number"] {
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
   opacity: 0;
   pointer-events: none;
-  transition: all 0.16s ease;
+  transition: all 0.28s cubic-bezier(0.22, 1, 0.36, 1);
   z-index: 200;
 }
 
@@ -1362,7 +1362,7 @@ html[data-theme="light"] .settings-overlay {
 .accordion-chevron {
   font-size: 0.8rem;
   color: var(--text-slate-500);
-  transition: transform 0.14s ease;
+  transition: transform 0.26s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .settings-accordion[open] .accordion-chevron {
@@ -1581,11 +1581,11 @@ html[data-theme="light"] .settings-drawer {
 .icon-hdr-btn,
 .profile-hdr-btn,
 .sync-badge-btn {
-  transition: transform 0.12s cubic-bezier(0.22, 1, 0.36, 1),
-              background-color 0.16s ease,
-              border-color 0.16s ease,
-              color 0.16s ease,
-              box-shadow 0.2s ease;
+  transition: transform 0.18s cubic-bezier(0.22, 1, 0.36, 1),
+              background-color 0.24s ease,
+              border-color 0.24s ease,
+              color 0.24s ease,
+              box-shadow 0.28s ease;
 }
 
 .inc-btn:active:not(:disabled):not(.disabled),
@@ -1618,7 +1618,7 @@ html[data-theme="light"] .settings-drawer {
 }
 
 .gym-dot {
-  transition: transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1), background-color 0.18s ease;
+  transition: transform 0.34s cubic-bezier(0.34, 1.56, 0.64, 1), background-color 0.26s ease;
 }
 
 .gym-dot.on {
@@ -1725,113 +1725,113 @@ html[data-theme="light"] .settings-drawer {
 
 /* View & Action Transition Classes */
 .fx-screen-right {
-  animation: ihScreenInRight 0.21s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: ihScreenInRight 0.36s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 .fx-screen-left {
-  animation: ihScreenInLeft 0.21s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: ihScreenInLeft 0.36s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 .fx-slide-next {
-  animation: ihSlideNext 0.18s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: ihSlideNext 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 .fx-slide-prev {
-  animation: ihSlidePrev 0.18s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: ihSlidePrev 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 .fx-inspector-swap {
-  animation: ihFadeLift 0.18s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: ihFadeLift 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 .fx-val-pop {
-  animation: ihValuePop 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: ihValuePop 0.36s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 .fx-hdr-pop {
   display: inline-block;
-  animation: ihValuePop 0.24s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: ihValuePop 0.38s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 .fx-target-met {
-  animation: ihTargetMet 0.52s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: ihTargetMet 0.78s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 .fx-target-met .status-square {
-  animation: ihValuePop 0.28s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  animation: ihValuePop 0.44s cubic-bezier(0.34, 1.56, 0.64, 1) both;
 }
 
 .fx-gym-pop {
-  animation: ihGymPop 0.26s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  animation: ihGymPop 0.42s cubic-bezier(0.34, 1.56, 0.64, 1) both;
 }
 
 .fx-gym-btn-pulse {
-  animation: ihGymBtnPulse 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: ihGymBtnPulse 0.62s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 .cal-cell.selected.fx-cell-select {
-  animation: ihCellSelect 0.2s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  animation: ihCellSelect 0.34s cubic-bezier(0.34, 1.56, 0.64, 1) both;
 }
 
 .fx-row-move {
-  animation: ihFadeLift 0.18s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: ihFadeLift 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 /* Charts Animations */
 .chart-line-path {
   stroke-dasharray: 100;
   stroke-dashoffset: 0;
-  animation: ihChartDraw 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: ihChartDraw 0.68s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 .chart-area-path {
-  animation: ihChartFadeIn 0.36s ease both;
+  animation: ihChartFadeIn 0.58s ease both;
 }
 
 .chart-pt {
   transform-box: fill-box;
   transform-origin: center;
-  animation: ihCellSelect 0.28s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  animation: ihCellSelect 0.44s cubic-bezier(0.34, 1.56, 0.64, 1) both;
 }
 
 .chart-bar-fill {
   transform-origin: bottom center;
-  animation: ihBarGrow 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: ihBarGrow 0.52s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 /* Settings Overlay, Drawer, Pane & Accordions */
 .settings-overlay.overlay-enter,
 .auth-gate-overlay.overlay-enter {
-  animation: ihOverlayFadeIn 0.19s ease both;
+  animation: ihOverlayFadeIn 0.32s ease both;
 }
 
 .settings-overlay.overlay-exit,
 .auth-gate-overlay.overlay-exit {
-  animation: ihOverlayFadeOut 0.18s ease both;
+  animation: ihOverlayFadeOut 0.28s ease both;
   pointer-events: none;
 }
 
 .settings-drawer.drawer-enter,
 .auth-gate-card.drawer-enter {
-  animation: ihDrawerIn 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: ihDrawerIn 0.36s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 .settings-drawer.drawer-exit,
 .auth-gate-card.drawer-exit {
-  animation: ihDrawerOut 0.18s cubic-bezier(0.4, 0, 1, 1) both;
+  animation: ihDrawerOut 0.28s cubic-bezier(0.4, 0, 1, 1) both;
 }
 
 .settings-content-pane.pane-enter > * {
-  animation: ihFadeLift 0.18s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: ihFadeLift 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 .settings-accordion[open] .settings-accordion-body,
 .danger-confirm-box {
-  animation: ihFadeLift 0.18s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: ihFadeLift 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 .auth-gate-card.fx-shake {
-  animation: ihShake 0.32s ease both;
+  animation: ihShake 0.44s ease both;
 }
 
 @media (prefers-reduced-motion: reduce) {

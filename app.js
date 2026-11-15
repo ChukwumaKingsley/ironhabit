@@ -740,7 +740,7 @@ const App = (() => {
             overlay.innerHTML = '';
             overlay.classList.remove('overlay-exit');
           }
-        }, 185);
+        }, 285);
       } else {
         wasSessionLocked = false;
         overlay.style.display = 'none';
@@ -1897,7 +1897,7 @@ const App = (() => {
           <path class="chart-line-path" pathLength="100" d="${d}" fill="none" stroke="var(--text-slate-300)" stroke-width="2" stroke-linecap="round" />
 
           ${pts.map((p, idx) => `
-            <circle class="chart-pt" style="animation-delay:${Math.min(240, idx * 35)}ms;" cx="${p.x}" cy="${p.y}" r="${p.isCurrent ? 4.5 : 3.5}" fill="${p.hex}" stroke="var(--bg-inset)" stroke-width="1.8" />
+            <circle class="chart-pt" style="animation-delay:${Math.min(360, idx * 55)}ms;" cx="${p.x}" cy="${p.y}" r="${p.isCurrent ? 4.5 : 3.5}" fill="${p.hex}" stroke="var(--bg-inset)" stroke-width="1.8" />
             <text x="${p.x}" y="${p.y - 8}" text-anchor="middle" fill="${p.hex}" font-size="12" font-weight="700">${p.v}</text>
             <text x="${p.x}" y="${svgH - 4}" text-anchor="middle" fill="${p.isCurrent ? '#F59E0B' : '#64748B'}" font-size="12" font-weight="600">${p.short}</text>
           `).join('')}
@@ -1923,7 +1923,7 @@ const App = (() => {
                 const h = Math.max(4, Math.min(95, Math.round((s.v / maxVal) * 100)));
                 return `
                   <div style="flex:1;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;z-index:1;">
-                    <div class="chart-bar-fill" style="width:100%;max-width:20px;height:${h}%;background:${s.hex};border-radius:2px 2px 0 0;animation-delay:${idx * 22}ms;"></div>
+                    <div class="chart-bar-fill" style="width:100%;max-width:20px;height:${h}%;background:${s.hex};border-radius:2px 2px 0 0;animation-delay:${idx * 40}ms;"></div>
                   </div>
                 `;
               }).join('')}
@@ -2425,7 +2425,7 @@ const App = (() => {
             overlay.classList.remove('overlay-exit');
             lastRenderedSettingsSection = null;
           }
-        }, 185);
+        }, 285);
       } else {
         wasSettingsOpen = false;
         overlay.style.display = 'none';
@@ -2580,7 +2580,7 @@ const App = (() => {
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=14').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=15').then((reg) => {
         if (reg && reg.update) reg.update();
       }).catch(() => {});
     });
