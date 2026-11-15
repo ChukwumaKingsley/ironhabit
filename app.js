@@ -93,9 +93,8 @@ const App = (() => {
 
   function getMondayKey(dateKey) {
     const d = parseDateKey(dateKey);
-    const day = d.getDay(); // 0=Sun..6=Sat
-    const diff = day === 0 ? -6 : 1 - day;
-    d.setDate(d.getDate() + diff);
+    const day = d.getDay(); // 0=Sun..6=Sat (Sunday is first day of week)
+    d.setDate(d.getDate() - day);
     return toDateKey(d);
   }
 
@@ -123,7 +122,8 @@ const App = (() => {
   }
 
   function getISOWeekNumber(dateKey) {
-    const d = parseDateKey(dateKey);
+    const sunKey = getMondayKey(dateKey);
+    const d = parseDateKey(addDays(sunKey, 3)); // Mid-week anchor so Sun-Sat share the same week number
     const target = new Date(d.valueOf());
     const dayNr = (d.getDay() + 6) % 7;
     target.setDate(target.getDate() - dayNr + 3);
@@ -432,8 +432,8 @@ const App = (() => {
     const curMon = getMondayKey(today);
     const gymSum = getWeekGymSummary(curMon);
     const visitedGymToday = Boolean(state.logs[today] && state.logs[today].gym);
-    const dowMon0 = (new Date().getDay() + 6) % 7; // 0=Mon..6=Sun
-    const daysRemainingInWeek = 7 - dowMon0;
+    const dowSun0 = new Date().getDay(); // 0=Sun..6=Sat
+    const daysRemainingInWeek = 7 - dowSun0;
     const gymNeeded = Math.max(0, gymSum.target - gymSum.count);
 
     const homeDone = unmet.length === 0;
@@ -1030,7 +1030,7 @@ const App = (() => {
 
     const mondayKey = getMondayKey(dateKey);
     const weekGym = getWeekGymSummary(mondayKey);
-    const dayNamesShort = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    const dayNamesShort = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     const activeDayGym = Boolean(state.logs[dateKey] && state.logs[dateKey].gym);
 
     return `
@@ -1210,7 +1210,7 @@ const App = (() => {
         </div>
 
         <div class="cal-8-header">
-          <div>M</div><div>T</div><div>W</div><div>T</div><div>F</div><div>S</div><div>S</div>
+          <div>SUN</div><div>MON</div><div>TUE</div><div>WED</div><div>THU</div><div>FRI</div><div>SAT</div>
           <div class="text-sky">GYM</div>
         </div>
 
@@ -2068,7 +2068,7 @@ const App = (() => {
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=8').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=9').then((reg) => {
         if (reg && reg.update) reg.update();
       }).catch(() => {});
     });
