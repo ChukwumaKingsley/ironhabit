@@ -1,9 +1,9 @@
-const CACHE_NAME = 'iron-habit-v21';
+const CACHE_NAME = 'iron-habit-v22';
 const ASSETS = [
   './',
   './index.html',
-  './styles.css?v=21',
-  './app.js?v=21',
+  './styles.css?v=22',
+  './app.js?v=22',
   './manifest.json',
   './icon.svg'
 ];
@@ -67,6 +67,12 @@ self.addEventListener('fetch', (event) => {
         }
         return networkResponse;
       })
-      .catch(() => caches.match(event.request))
+      .catch(() =>
+        caches.match(event.request).then((hit) =>
+          hit ||
+          caches.match(event.request, { ignoreSearch: true }) ||
+          caches.match('./index.html')
+        )
+      )
   );
 });

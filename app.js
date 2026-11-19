@@ -10,29 +10,54 @@ const EDIT_WINDOW_DAYS = 7;
 const DEFAULT_PROFILE_NAME = 'Athlete';
 
 function buildGDriveScriptSource(passkey) {
-  const cleanKey = (passkey || 'CHANGE_THIS_TO_YOUR_SECRET_PASSKEY').replace(/'/g, "\\'");
+  const cleanKey = String(passkey || 'CHANGE_THIS_TO_YOUR_SECRET_PASSKEY')
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/\r?\n/g, '');
   return `const FILE_NAME = 'fitness-tracker-data.json';
 const SECRET_PASSKEY = '${cleanKey}';
 
+function timingSafeEqualStr(a, b) {
+  const sa = String(a || '');
+  const sb = String(b || '');
+  const len = Math.max(sa.length, sb.length);
+  let diff = sa.length ^ sb.length;
+  for (let i = 0; i < len; i++) {
+    const ca = i < sa.length ? sa.charCodeAt(i) : 0;
+    const cb = i < sb.length ? sb.charCodeAt(i) : 0;
+    diff |= (ca ^ cb);
+  }
+  return sa.length > 0 && diff === 0;
+}
+
 function isAuthorized(key) {
   const incoming = String(key || '').trim();
-  if (!incoming) return false;
+  if (incoming.length < 4) return false;
   const configured = String(SECRET_PASSKEY || '').trim();
   if (configured && configured !== 'CHANGE_THIS_TO_YOUR_SECRET_PASSKEY') {
-    return incoming === configured;
+    return timingSafeEqualStr(incoming, configured);
   }
-  const props = PropertiesService.getScriptProperties();
-  const bound = props.getProperty('BOUND_PASSKEY');
-  if (!bound) {
-    props.setProperty('BOUND_PASSKEY', incoming);
-    return true;
+  const lock = LockService.getScriptLock();
+  lock.tryLock(5000);
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const bound = props.getProperty('BOUND_PASSKEY');
+    if (!bound) {
+      props.setProperty('BOUND_PASSKEY', incoming);
+      return true;
+    }
+    return timingSafeEqualStr(incoming, bound);
+  } finally {
+    try { lock.releaseLock(); } catch (_) {}
   }
-  return incoming === bound;
 }
 
 function getOrCreateFile() {
   const files = DriveApp.getFilesByName(FILE_NAME);
-  if (files.hasNext()) return files.next();
+  while (files.hasNext()) {
+    const file = files.next();
+    if (!file.isTrashed()) return file;
+  }
   return DriveApp.createFile(FILE_NAME, JSON.stringify({ version: 2, updatedAt: 0, payload: null }, null, 2), MimeType.PLAIN_TEXT);
 }
 
@@ -40,7 +65,7 @@ function doGet(e) {
   const key = (e && e.parameter && e.parameter.key) ? e.parameter.key : '';
   if (!isAuthorized(key)) {
     return ContentService
-      .createTextOutput(JSON.stringify({ ok: false, error: 'Unauthorized: invalid or missing passkey' }))
+      .createTextOutput(JSON.stringify({ ok: false, error: 'Unauthorized: invalid or missing passkey (min 4 chars)' }))
       .setMimeType(ContentService.MimeType.JSON);
   }
   const file = getOrCreateFile();
@@ -48,21 +73,31 @@ function doGet(e) {
 }
 
 function doPost(e) {
-  const parsed = JSON.parse((e && e.postData && e.postData.contents) ? e.postData.contents : '{}');
-  const key = (parsed && parsed.passkey) || (e && e.parameter && e.parameter.key) || '';
-  if (!isAuthorized(key)) {
+  const lock = LockService.getScriptLock();
+  lock.tryLock(10000);
+  try {
+    const parsed = JSON.parse((e && e.postData && e.postData.contents) ? e.postData.contents : '{}');
+    const key = (parsed && parsed.passkey) || (e && e.parameter && e.parameter.key) || '';
+    if (!isAuthorized(key)) {
+      return ContentService
+        .createTextOutput(JSON.stringify({ ok: false, error: 'Unauthorized: invalid or missing passkey (min 4 chars)' }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+    const toSave = {
+      version: parsed.version || 2,
+      updatedAt: parsed.updatedAt || Date.now(),
+      payload: parsed.payload || null
+    };
+    const file = getOrCreateFile();
+    file.setContent(JSON.stringify(toSave, null, 2));
+    return ContentService.createTextOutput(JSON.stringify({ ok: true, updatedAt: toSave.updatedAt })).setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
     return ContentService
-      .createTextOutput(JSON.stringify({ ok: false, error: 'Unauthorized: invalid or missing passkey' }))
+      .createTextOutput(JSON.stringify({ ok: false, error: String(err) }))
       .setMimeType(ContentService.MimeType.JSON);
+  } finally {
+    try { lock.releaseLock(); } catch (_) {}
   }
-  const toSave = {
-    version: parsed.version || 2,
-    updatedAt: parsed.updatedAt || Date.now(),
-    payload: parsed.payload || null
-  };
-  const file = getOrCreateFile();
-  file.setContent(JSON.stringify(toSave, null, 2));
-  return ContentService.createTextOutput(JSON.stringify({ ok: true, updatedAt: toSave.updatedAt })).setMimeType(ContentService.MimeType.JSON);
 }`;
 }
 
@@ -92,7 +127,7 @@ const App = (() => {
     return Math.round((d1.getTime() - d2.getTime()) / 86400000);
   }
 
-  function getMondayKey(dateKey) {
+  function getSundayKey(dateKey) {
     const d = parseDateKey(dateKey);
     const day = d.getDay(); // 0=Sun..6=Sat (Sunday is first day of week)
     d.setDate(d.getDate() - day);
@@ -123,7 +158,7 @@ const App = (() => {
   }
 
   function getISOWeekNumber(dateKey) {
-    const sunKey = getMondayKey(dateKey);
+    const sunKey = getSundayKey(dateKey);
     const d = parseDateKey(addDays(sunKey, 3)); // Mid-week anchor so Sun-Sat share the same week number
     const target = new Date(d.valueOf());
     const dayNr = (d.getDay() + 6) % 7;
@@ -162,8 +197,66 @@ const App = (() => {
     return unique;
   }
 
+  const VAULT_MASK = 'IRONHABIT_LOCAL_VAULT_v22_KEY';
+
+  function xorCodec(str) {
+    const s = String(str || '');
+    let out = '';
+    for (let i = 0; i < s.length; i++) {
+      const code = s.charCodeAt(i) ^ VAULT_MASK.charCodeAt(i % VAULT_MASK.length);
+      out += String.fromCharCode(code);
+    }
+    return out;
+  }
+
+  function encodeAuthVault(passkey, githubToken) {
+    try {
+      const payload = JSON.stringify({
+        p: String(passkey || ''),
+        g: String(githubToken || '')
+      });
+      return btoa(encodeURIComponent(xorCodec(payload)));
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function decodeAuthVault(vaultStr) {
+    if (!vaultStr || typeof vaultStr !== 'string') return null;
+    try {
+      const decoded = xorCodec(decodeURIComponent(atob(vaultStr)));
+      const obj = JSON.parse(decoded);
+      if (obj && typeof obj === 'object') {
+        return {
+          syncPasskey: String(obj.p || ''),
+          githubToken: String(obj.g || '')
+        };
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  function persistStateToLocal(st = state) {
+    try {
+      const toStore = { ...st };
+      toStore.authVault = encodeAuthVault(st.syncPasskey, st.githubToken);
+      delete toStore.syncPasskey;
+      delete toStore.githubToken;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(toStore));
+    } catch (e) {
+      console.error('Failed to write local state:', e);
+    }
+  }
+
   function normalizeState(st) {
     if (!st || typeof st !== 'object') return createDefaultState();
+    if (st.authVault) {
+      const creds = decodeAuthVault(st.authVault);
+      if (creds) {
+        if (!st.syncPasskey && creds.syncPasskey) st.syncPasskey = creds.syncPasskey;
+        if (!st.githubToken && creds.githubToken) st.githubToken = creds.githubToken;
+      }
+    }
     if (!st.profileName || st.profileName === 'Kingsley') {
       st.profileName = DEFAULT_PROFILE_NAME;
     }
@@ -192,11 +285,17 @@ const App = (() => {
     if (!st.targetHistory || typeof st.targetHistory !== 'object' || Array.isArray(st.targetHistory)) {
       st.targetHistory = {};
     }
+    if (!st.exerciseScheduleHistory || typeof st.exerciseScheduleHistory !== 'object' || Array.isArray(st.exerciseScheduleHistory)) {
+      st.exerciseScheduleHistory = {};
+    }
 
     const needsV19Heal = !st.targetHistoryVersion || st.targetHistoryVersion < 2;
 
     st.exercises = (Array.isArray(st.exercises) ? st.exercises : []).map(ex => {
       const cleanTarget = Math.max(1, Number(ex.target) || 1);
+      const createdAtDate = (ex.createdAtDate && /^\d{4}-\d{2}-\d{2}$/.test(ex.createdAtDate))
+        ? ex.createdAtDate
+        : baselineDate;
       const rawHist = Array.isArray(st.targetHistory[ex.id]) ? st.targetHistory[ex.id] : [];
       const byDate = {};
       rawHist.forEach(item => {
@@ -206,7 +305,7 @@ const App = (() => {
       });
       const histDates = Object.keys(byDate).sort();
       if (histDates.length === 0) {
-        st.targetHistory[ex.id] = [{ date: baselineDate, target: cleanTarget }];
+        st.targetHistory[ex.id] = [{ date: createdAtDate, target: cleanTarget }];
       } else if (needsV19Heal && histDates.length === 1 && byDate[histDates[0]] !== cleanTarget) {
         // Recover from v19 bug where createDefaultState() seeded default targets (e.g. 50) over user targets (e.g. 30)
         const polluted = byDate[histDates[0]];
@@ -222,32 +321,52 @@ const App = (() => {
       }
 
       const mode = ex.scheduleMode === 'custom' ? 'custom' : 'daily';
-      if (mode === 'daily') {
-        return {
-          ...ex,
-          target: cleanTarget,
-          scheduleMode: 'daily',
-          scheduleTargetCount: 7,
-          scheduleDays: [0, 1, 2, 3, 4, 5, 6]
-        };
+      const normDays = mode === 'daily'
+        ? [0, 1, 2, 3, 4, 5, 6]
+        : normalizeDaysList(ex.scheduleDays, ex.scheduleTargetCount || 3);
+      const normCount = mode === 'daily'
+        ? 7
+        : Math.max(1, Math.min(6, Number(ex.scheduleTargetCount) || normDays.length));
+      const finalDays = mode === 'daily' ? normDays : normDays.slice(0, Math.max(1, normCount));
+
+      const rawSchedHist = Array.isArray(st.exerciseScheduleHistory[ex.id]) ? st.exerciseScheduleHistory[ex.id] : [];
+      const schedByDate = {};
+      rawSchedHist.forEach(item => {
+        if (item && /^\d{4}-\d{2}-\d{2}$/.test(item.date)) {
+          const m = item.mode === 'custom' ? 'custom' : 'daily';
+          const c = m === 'daily' ? 7 : Math.max(1, Math.min(6, Number(item.count) || 3));
+          const d = m === 'daily' ? [0, 1, 2, 3, 4, 5, 6] : normalizeDaysList(item.days, c).slice(0, c);
+          schedByDate[item.date] = { date: item.date, mode: m, count: c, days: d };
+        }
+      });
+      const schedDates = Object.keys(schedByDate).sort();
+      if (schedDates.length === 0) {
+        st.exerciseScheduleHistory[ex.id] = [{
+          date: createdAtDate,
+          mode,
+          count: normCount,
+          days: [...finalDays]
+        }];
+      } else {
+        st.exerciseScheduleHistory[ex.id] = schedDates.map(d => schedByDate[d]);
       }
-      const days = normalizeDaysList(ex.scheduleDays, ex.scheduleTargetCount || 3);
-      const count = Math.max(1, Math.min(6, Number(ex.scheduleTargetCount) || days.length));
+
       return {
         ...ex,
         target: cleanTarget,
-        scheduleMode: 'custom',
-        scheduleTargetCount: count,
-        scheduleDays: days.slice(0, Math.max(1, count))
+        createdAtDate,
+        scheduleMode: mode,
+        scheduleTargetCount: normCount,
+        scheduleDays: finalDays
       };
     });
 
-    const baselineSun = getMondayKey(baselineDate);
+    const baselineSun = getSundayKey(baselineDate);
     const rawGymHist = Array.isArray(st.gymHistory) ? st.gymHistory : [];
     const gymByWeek = {};
     rawGymHist.forEach(item => {
       if (item && /^\d{4}-\d{2}-\d{2}$/.test(item.week)) {
-        const wKey = getMondayKey(item.week);
+        const wKey = getSundayKey(item.week);
         const t = Math.max(1, Math.min(7, Number(item.target) || 4));
         const m = item.mode === 'daily' || t >= 7 ? 'daily' : 'custom';
         gymByWeek[wKey] = {
@@ -319,11 +438,12 @@ const App = (() => {
       biometricCredId: '',
       lastSyncedAt: null,
       exercises: [
-        { id: 'pushups', name: 'Push-ups',   target: 50, unit: 'reps', scheduleMode: 'daily', scheduleTargetCount: 7, scheduleDays: [0, 1, 2, 3, 4, 5, 6] },
-        { id: 'situps',  name: 'Sit-ups',    target: 50, unit: 'reps', scheduleMode: 'daily', scheduleTargetCount: 7, scheduleDays: [0, 1, 2, 3, 4, 5, 6] },
-        { id: 'squats',  name: 'Air Squats', target: 40, unit: 'reps', scheduleMode: 'daily', scheduleTargetCount: 7, scheduleDays: [0, 1, 2, 3, 4, 5, 6] }
+        { id: 'pushups', name: 'Push-ups',   target: 50, unit: 'reps', createdAtDate: startDate, scheduleMode: 'daily', scheduleTargetCount: 7, scheduleDays: [0, 1, 2, 3, 4, 5, 6] },
+        { id: 'situps',  name: 'Sit-ups',    target: 50, unit: 'reps', createdAtDate: startDate, scheduleMode: 'daily', scheduleTargetCount: 7, scheduleDays: [0, 1, 2, 3, 4, 5, 6] },
+        { id: 'squats',  name: 'Air Squats', target: 40, unit: 'reps', createdAtDate: startDate, scheduleMode: 'daily', scheduleTargetCount: 7, scheduleDays: [0, 1, 2, 3, 4, 5, 6] }
       ],
       targetHistory: {},
+      exerciseScheduleHistory: {},
       logs: {}
     };
   }
@@ -332,6 +452,7 @@ const App = (() => {
     const copy = { ...st };
     delete copy.syncPasskey;
     delete copy.githubToken;
+    delete copy.authVault;
     delete copy.biometricEnabled;
     delete copy.biometricCredId;
     return copy;
@@ -350,11 +471,19 @@ const App = (() => {
     st.trackingStartDate = startDate;
     st.logs = {};
     st.targetHistory = {};
+    st.exerciseScheduleHistory = {};
     st.exercises.forEach(ex => {
+      ex.createdAtDate = startDate;
       st.targetHistory[ex.id] = [{ date: startDate, target: ex.target }];
+      st.exerciseScheduleHistory[ex.id] = [{
+        date: startDate,
+        mode: ex.scheduleMode || 'daily',
+        count: ex.scheduleTargetCount || 7,
+        days: Array.isArray(ex.scheduleDays) ? [...ex.scheduleDays] : [0, 1, 2, 3, 4, 5, 6]
+      }];
     });
     st.gymHistory = [{
-      week: getMondayKey(startDate),
+      week: getSundayKey(startDate),
       mode: st.gymScheduleMode || 'custom',
       target: st.weeklyGymTarget || 4,
       days: Array.isArray(st.gymScheduleDays) ? [...st.gymScheduleDays] : [1, 3, 5, 6]
@@ -452,8 +581,8 @@ const App = (() => {
           if (merged.syncUrl && !merged.githubToken) {
             merged.syncProvider = 'gdrive';
           }
-          if (!parsed.targetHistoryVersion || parsed.targetHistoryVersion < 2) {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
+          if (!parsed.targetHistoryVersion || parsed.targetHistoryVersion < 2 || parsed.syncPasskey || parsed.githubToken) {
+            persistStateToLocal(merged);
           }
           return merged;
         }
@@ -463,20 +592,16 @@ const App = (() => {
     }
     const initial = createDefaultState();
     seedSampleHistory(initial);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(initial));
+    persistStateToLocal(initial);
     return initial;
   }
 
   function saveState(syncCloud = true) {
     if (syncCloud) {
-      state.updatedAt = Date.now();
+      state.updatedAt = Math.max(Date.now(), (state.updatedAt || 0) + 1);
       hasUnsyncedLocalChanges = true;
     }
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    } catch (e) {
-      console.error('Failed to write local state:', e);
-    }
+    persistStateToLocal(state);
     render();
 
     if (syncCloud && isCloudConfigured(state)) {
@@ -596,7 +721,7 @@ const App = (() => {
     };
   }
 
-  function recordGymRuleChange(prevRule, effectiveWeek = getMondayKey(toDateKey())) {
+  function recordGymRuleChange(prevRule, effectiveWeek = getSundayKey(toDateKey())) {
     if (!Array.isArray(state.gymHistory)) {
       state.gymHistory = [];
     }
@@ -608,7 +733,7 @@ const App = (() => {
     });
     const hasPriorWeek = Object.keys(byWeek).some(w => w < effectiveWeek);
     if (!hasPriorWeek && prevRule) {
-      const earliestSun = getMondayKey(getEarliestTrackingDate());
+      const earliestSun = getSundayKey(getEarliestTrackingDate());
       const anchorWeek = earliestSun < effectiveWeek ? earliestSun : addDays(effectiveWeek, -7);
       byWeek[anchorWeek] = {
         week: anchorWeek,
@@ -652,9 +777,76 @@ const App = (() => {
     return normalizeDaysList(ex.scheduleDays, ex.scheduleTargetCount || 3);
   }
 
+  function getExerciseScheduleForDate(exOrId, dateKey) {
+    const ex = typeof exOrId === 'string'
+      ? state.exercises.find(e => e.id === exOrId)
+      : exOrId;
+    if (!ex) return { mode: 'daily', count: 7, days: [0, 1, 2, 3, 4, 5, 6] };
+    const hist = state.exerciseScheduleHistory && state.exerciseScheduleHistory[ex.id];
+    if (dateKey && Array.isArray(hist) && hist.length > 0) {
+      let chosen = hist[0];
+      for (let i = 0; i < hist.length; i++) {
+        if (hist[i].date <= dateKey) chosen = hist[i];
+        else break;
+      }
+      if (chosen) {
+        const m = chosen.mode === 'custom' ? 'custom' : 'daily';
+        const c = m === 'daily' ? 7 : Math.max(1, Math.min(6, Number(chosen.count) || 3));
+        const d = m === 'daily' ? [0, 1, 2, 3, 4, 5, 6] : normalizeDaysList(chosen.days, c).slice(0, c);
+        return { mode: m, count: c, days: d };
+      }
+    }
+    const m = ex.scheduleMode === 'custom' ? 'custom' : 'daily';
+    const c = m === 'daily' ? 7 : Math.max(1, Math.min(6, Number(ex.scheduleTargetCount) || 3));
+    return {
+      mode: m,
+      count: c,
+      days: m === 'daily' ? [0, 1, 2, 3, 4, 5, 6] : getExerciseScheduleDays(ex)
+    };
+  }
+
+  function recordExerciseScheduleChange(ex, prevSched, effectiveDate = toDateKey()) {
+    if (!ex) return;
+    if (!state.exerciseScheduleHistory || typeof state.exerciseScheduleHistory !== 'object') {
+      state.exerciseScheduleHistory = {};
+    }
+    const list = Array.isArray(state.exerciseScheduleHistory[ex.id]) ? [...state.exerciseScheduleHistory[ex.id]] : [];
+    const byDate = {};
+    list.forEach(item => {
+      if (item && /^\d{4}-\d{2}-\d{2}$/.test(item.date)) {
+        byDate[item.date] = item;
+      }
+    });
+    const hasPriorAnchor = Object.keys(byDate).some(d => d < effectiveDate);
+    if (!hasPriorAnchor && prevSched) {
+      const earliest = (ex.createdAtDate && /^\d{4}-\d{2}-\d{2}$/.test(ex.createdAtDate))
+        ? ex.createdAtDate
+        : getEarliestTrackingDate();
+      const anchorDate = earliest < effectiveDate ? earliest : addDays(effectiveDate, -1);
+      byDate[anchorDate] = {
+        date: anchorDate,
+        mode: prevSched.mode,
+        count: prevSched.count,
+        days: [...prevSched.days]
+      };
+    }
+    const curDays = getExerciseScheduleDays(ex);
+    byDate[effectiveDate] = {
+      date: effectiveDate,
+      mode: ex.scheduleMode === 'custom' ? 'custom' : 'daily',
+      count: ex.scheduleMode === 'custom' ? Math.max(1, Math.min(6, Number(ex.scheduleTargetCount) || curDays.length)) : 7,
+      days: [...curDays]
+    };
+    state.exerciseScheduleHistory[ex.id] = Object.keys(byDate).sort().map(d => byDate[d]);
+  }
+
   function isExerciseDueOnDate(ex, dateKey) {
+    if (!ex) return false;
+    if (ex.createdAtDate && dateKey < ex.createdAtDate && getExerciseVal(dateKey, ex.id) <= 0) {
+      return false;
+    }
     const dow = parseDateKey(dateKey).getDay();
-    return getExerciseScheduleDays(ex).includes(dow);
+    return getExerciseScheduleForDate(ex, dateKey).days.includes(dow);
   }
 
   function getDueExercisesForDate(dateKey) {
@@ -702,10 +894,19 @@ const App = (() => {
     return 'none';
   }
 
+  let stateRenderRev = 1;
+  let cachedStreaksRev = 0;
+  let cachedStreaksVal = null;
+
   function computeHomeStreaks() {
+    if (cachedStreaksRev === stateRenderRev && cachedStreaksVal) {
+      return cachedStreaksVal;
+    }
     const today = toDateKey();
-    const keys = Object.keys(state.logs).concat([state.trackingStartDate, today]).sort();
-    const earliest = keys[0] || today;
+    const minAllowed = addDays(today, -1500);
+    const keys = Object.keys(state.logs).concat([state.trackingStartDate, today]).filter(Boolean).sort();
+    const rawEarliest = keys[0] || today;
+    const earliest = rawEarliest < minAllowed ? minAllowed : rawEarliest;
 
     let current = 0;
     const todayDue = getDueExercisesForDate(today);
@@ -729,7 +930,9 @@ const App = (() => {
     let best = current;
     let run = 0;
     let scan = earliest;
-    while (scan <= today) {
+    let safetyForward = 0;
+    while (scan <= today && safetyForward < 1500) {
+      safetyForward++;
       const due = getDueExercisesForDate(scan);
       if (due.length > 0) {
         if (isDayHomeMet(scan)) {
@@ -741,7 +944,9 @@ const App = (() => {
       }
       scan = addDays(scan, 1);
     }
-    return { current, best };
+    cachedStreaksRev = stateRenderRev;
+    cachedStreaksVal = { current, best };
+    return cachedStreaksVal;
   }
 
   function getGymBaseDays() {
@@ -751,7 +956,7 @@ const App = (() => {
 
   function getWeekGymSummary(mondayKey) {
     const today = toDateKey();
-    const currentMon = getMondayKey(today);
+    const currentMon = getSundayKey(today);
     const rule = getGymRuleForWeek(mondayKey);
     const isDaily = rule.mode === 'daily';
     const baseWeekdays = isDaily ? [0, 1, 2, 3, 4, 5, 6] : normalizeDaysList(rule.days, rule.target || 4);
@@ -817,7 +1022,7 @@ const App = (() => {
 
     const target = isDaily ? 7 : Math.max(1, Number(rule.target) || baseWeekdays.length || 4);
     const met = scheduledTotal > 0
-      ? (missedCount === 0 && scheduledMet >= scheduledTotal && count >= Math.min(target, scheduledTotal))
+      ? (missedCount === 0 && scheduledMet >= Math.max(target, scheduledTotal) && count >= target)
       : (count >= target);
 
     let status = 'red';
@@ -843,8 +1048,11 @@ const App = (() => {
 
   function computeGymWeeklyStreak() {
     const today = toDateKey();
-    const currentMon = getMondayKey(today);
+    const currentMon = getSundayKey(today);
     const curSum = getWeekGymSummary(currentMon);
+    if (!curSum.met && curSum.missedCount > 0) {
+      return 0;
+    }
     let streak = 0;
     let cursor = curSum.met ? currentMon : addDays(currentMon, -7);
     for (let i = 0; i < 104; i++) {
@@ -871,7 +1079,7 @@ const App = (() => {
     const today = toDateKey();
     const dueToday = getDueExercisesForDate(today);
     const unmet = dueToday.filter(ex => getExerciseVal(today, ex.id) < getExerciseTargetForDate(ex, today));
-    const curMon = getMondayKey(today);
+    const curMon = getSundayKey(today);
     const gymSum = getWeekGymSummary(curMon);
     const todayGymSlot = gymSum.days.find(d => d.dateKey === today);
     const visitedGymToday = Boolean(todayGymSlot && todayGymSlot.visited);
@@ -972,7 +1180,7 @@ const App = (() => {
       state.lastMorningNotifDate !== today
     ) {
       state.lastMorningNotifDate = today;
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      persistStateToLocal(state);
       const payload = buildGoalReminderPayload('morning', false);
       if (payload) {
         dispatchBrowserNotification(payload.title, payload.body);
@@ -982,7 +1190,7 @@ const App = (() => {
     // Evening window: at or after eveningReminderTime
     if (nowMinutes >= eveningMins && state.lastEveningNotifDate !== today) {
       state.lastEveningNotifDate = today;
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      persistStateToLocal(state);
       const payload = buildGoalReminderPayload('evening', false);
       if (payload) {
         dispatchBrowserNotification(payload.title, payload.body);
@@ -1115,7 +1323,7 @@ const App = (() => {
       if (assertion) {
         isSessionLocked = false;
         sessionStorage.setItem(SESSION_UNLOCK_KEY, '1');
-        renderAuthGate();
+        render();
         showToast('Unlocked with device biometrics');
         return true;
       }
@@ -1198,7 +1406,7 @@ const App = (() => {
 
     overlay.style.display = 'flex';
     overlay.innerHTML = `
-      <div class="auth-gate-card ${isOpeningNow ? 'drawer-enter' : ''}">
+      <div class="auth-gate-card ${isOpeningNow ? 'drawer-enter' : ''}" role="dialog" aria-modal="true" aria-label="Unlock IronHabit">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
           <span class="brand-name">IRONHABIT</span>
           <span class="locked-tag">${bioReady ? 'BIOMETRIC LOCK' : 'PASSKEY LOCKED'}</span>
@@ -1243,18 +1451,61 @@ const App = (() => {
   }
 
   async function findExistingGistId(token) {
-    const res = await fetch('https://api.github.com/gists?per_page=50', {
-      headers: {
-        'Accept': 'application/vnd.github+json',
-        'Authorization': `Bearer ${token}`
+    for (let page = 1; page <= 3; page++) {
+      const res = await fetch(`https://api.github.com/gists?per_page=100&page=${page}`, {
+        headers: {
+          'Accept': 'application/vnd.github+json',
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      if (!res.ok) throw new Error('GitHub token rejected');
+      const list = await res.json();
+      if (!Array.isArray(list) || list.length === 0) break;
+      const match = list.find(g => g.files && g.files['fitness-tracker-data.json']);
+      if (match) return match.id;
+      if (list.length < 100) break;
+    }
+    return '';
+  }
+
+  function mergeLogsByDate(localLogs, remoteLogs) {
+    const loc = (localLogs && typeof localLogs === 'object') ? localLogs : {};
+    const rem = (remoteLogs && typeof remoteLogs === 'object') ? remoteLogs : {};
+    const allDates = new Set([...Object.keys(loc), ...Object.keys(rem)]);
+    const merged = {};
+    allDates.forEach(dateKey => {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) return;
+      const lEntry = loc[dateKey];
+      const rEntry = rem[dateKey];
+      if (!lEntry) {
+        merged[dateKey] = rEntry;
+        return;
+      }
+      if (!rEntry) {
+        merged[dateKey] = lEntry;
+        return;
+      }
+      const lTime = Number(lEntry.updatedAt) || 0;
+      const rTime = Number(rEntry.updatedAt) || 0;
+      if (lTime > rTime) {
+        merged[dateKey] = {
+          ...rEntry,
+          ...lEntry,
+          exercises: { ...(rEntry.exercises || {}), ...(lEntry.exercises || {}) },
+          targets: { ...(rEntry.targets || {}), ...(lEntry.targets || {}) },
+          updatedAt: lTime
+        };
+      } else {
+        merged[dateKey] = {
+          ...lEntry,
+          ...rEntry,
+          exercises: { ...(lEntry.exercises || {}), ...(rEntry.exercises || {}) },
+          targets: { ...(lEntry.targets || {}), ...(rEntry.targets || {}) },
+          updatedAt: rTime
+        };
       }
     });
-    if (!res.ok) throw new Error('GitHub token rejected');
-    const list = await res.json();
-    const match = Array.isArray(list)
-      ? list.find(g => g.files && g.files['fitness-tracker-data.json'])
-      : null;
-    return match ? match.id : '';
+    return merged;
   }
 
   function captureSettingsInputsIntoState() {
@@ -1280,12 +1531,13 @@ const App = (() => {
       changed = true;
     }
     if (changed) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      persistStateToLocal(state);
       updateLockHeader();
     }
   }
 
   let isSyncInFlight = false;
+  let pendingPushAfterFlight = false;
 
   async function pushToCloud(manual = false) {
     if (syncTimer) {
@@ -1305,12 +1557,17 @@ const App = (() => {
       return;
     }
 
+    if (isSyncInFlight) {
+      pendingPushAfterFlight = true;
+      return;
+    }
+
     isSyncInFlight = true;
     ui.syncStatus = 'syncing';
     updateSyncHeader();
 
     if (!state.updatedAt) {
-      state.updatedAt = Date.now();
+      state.updatedAt = Math.max(Date.now(), (state.updatedAt || 0) + 1);
     }
     const envelope = {
       version: 2,
@@ -1357,7 +1614,7 @@ const App = (() => {
         }
         hasUnsyncedLocalChanges = false;
         state.lastSyncedAt = Date.now();
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        persistStateToLocal(state);
         ui.syncStatus = 'synced';
         updateSyncHeader();
         if (manual) {
@@ -1370,14 +1627,18 @@ const App = (() => {
         if (manual) showToast('GitHub Gist auth failed — check token (gist scope)');
       } finally {
         isSyncInFlight = false;
+        if (pendingPushAfterFlight) {
+          pendingPushAfterFlight = false;
+          pushToCloud(false);
+        }
       }
       return;
     }
 
-    // Google Drive Passkey-Authenticated Sync
+    // Google Drive Passkey-Authenticated Sync (Passkey sent only in POST body)
     try {
       const sep = state.syncUrl.includes('?') ? '&' : '?';
-      const authUrl = `${state.syncUrl}${sep}key=${encodeURIComponent(state.syncPasskey || '')}&_t=${Date.now()}`;
+      const authUrl = `${state.syncUrl}${sep}_t=${Date.now()}`;
       const body = JSON.stringify({
         passkey: state.syncPasskey,
         ...envelope
@@ -1404,7 +1665,7 @@ const App = (() => {
       }
       hasUnsyncedLocalChanges = false;
       state.lastSyncedAt = Date.now();
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      persistStateToLocal(state);
       ui.syncStatus = 'synced';
       updateSyncHeader();
       if (manual) {
@@ -1417,6 +1678,10 @@ const App = (() => {
       if (manual) showToast('Could not reach Google Drive URL');
     } finally {
       isSyncInFlight = false;
+      if (pendingPushAfterFlight) {
+        pendingPushAfterFlight = false;
+        pushToCloud(false);
+      }
     }
   }
 
@@ -1510,13 +1775,14 @@ const App = (() => {
           state = normalizeState({
             ...createDefaultState(),
             ...payload,
+            logs: mergeLogsByDate(state.logs, payload.logs),
             ...preservedAuth,
             gistId,
-            updatedAt: remoteUpdatedAt || Date.now(),
+            updatedAt: Math.max(remoteUpdatedAt, Number(state.updatedAt || 0)) || Date.now(),
             lastSyncedAt: Date.now()
           });
           hasUnsyncedLocalChanges = false;
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+          persistStateToLocal(state);
           ui.syncStatus = 'synced';
           updateSyncHeader();
           render();
@@ -1554,12 +1820,13 @@ const App = (() => {
         state = normalizeState({
           ...createDefaultState(),
           ...data.payload,
+          logs: mergeLogsByDate(state.logs, data.payload.logs),
           ...preservedAuth,
-          updatedAt: remoteUpdatedAt || Date.now(),
+          updatedAt: Math.max(remoteUpdatedAt, Number(state.updatedAt || 0)) || Date.now(),
           lastSyncedAt: Date.now()
         });
         hasUnsyncedLocalChanges = false;
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        persistStateToLocal(state);
         ui.syncStatus = 'synced';
         updateSyncHeader();
         render();
@@ -1643,7 +1910,7 @@ const App = (() => {
       hdrHomeStatus.className = `tabular-nums ${avgPct >= 100 ? 'text-emerald' : avgPct > 0 ? 'text-amber' : 'text-red'}`;
     }
 
-    const curMon = getMondayKey(today);
+    const curMon = getSundayKey(today);
     const gymSum = getWeekGymSummary(curMon);
     const gymStreak = computeGymWeeklyStreak();
     const hdrGymRatioEl = document.getElementById('hdr-gym-ratio');
@@ -1708,7 +1975,7 @@ const App = (() => {
         <div class="ex-top-line">
           <div style="display:flex;align-items:center;gap:6px;min-width:0;flex-wrap:wrap;">
             <span class="ex-title" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(ex.name)}</span>
-            ${ex.scheduleMode === 'custom'
+            ${getExerciseScheduleForDate(ex, dateKey).mode === 'custom'
               ? (isDue ? '<span class="due-badge">Due</span>' : '<span class="rest-badge">Rest</span>')
               : ''}
             ${dayTarget !== ex.target ? `<span class="rest-badge" title="Target active on this date">Then ${dayTarget}</span>` : ''}
@@ -1753,7 +2020,7 @@ const App = (() => {
     const dueMetCount = dueExercises.filter(ex => getExerciseVal(dateKey, ex.id) >= getExerciseTargetForDate(ex, dateKey)).length;
     const dayStatus = getDayStatus(dateKey);
 
-    const mondayKey = getMondayKey(dateKey);
+    const mondayKey = getSundayKey(dateKey);
     const weekGym = getWeekGymSummary(mondayKey);
     const dayNamesShort = DAY_LABELS_SHORT;
     const activeSlot = weekGym.days.find(d => d.dateKey === dateKey);
@@ -1984,7 +2251,7 @@ const App = (() => {
     const isCurrentMonth = year === nowDt.getFullYear() && month === nowDt.getMonth();
     const firstOfMonth = new Date(year, month, 1, 12, 0, 0);
     const monthTitle = firstOfMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
-    const startMon = getMondayKey(toDateKey(firstOfMonth));
+    const startMon = getSundayKey(toDateKey(firstOfMonth));
     const lastOfMonth = new Date(year, month + 1, 0, 12, 0, 0);
     const lastKey = toDateKey(lastOfMonth);
 
@@ -2029,13 +2296,17 @@ const App = (() => {
     }
 
     const selKey = ui.selectedCalDate;
+    const currentWeekEnd = addDays(getSundayKey(today), 6);
+    const isFutureSel = selKey > today;
     const locked = isDateLocked(selKey);
     const selStatus = getDayStatus(selKey);
     const selGym = Boolean(state.logs[selKey] && state.logs[selKey].gym);
-    const selMonKey = getMondayKey(selKey);
+    const selMonKey = getSundayKey(selKey);
     const selWeekGym = getWeekGymSummary(selMonKey);
     const selGymSlot = selWeekGym.days.find(d => d.dateKey === selKey);
-    const selMissedToShift = (!locked && selGymSlot && !selGymSlot.scheduled && !selGymSlot.visited)
+    const canShiftToSel = (!isFutureSel ? !locked : selKey <= currentWeekEnd) &&
+      selGymSlot && !selGymSlot.scheduled && !selGymSlot.visited;
+    const selMissedToShift = canShiftToSel
       ? selWeekGym.days.find(s => s.missed && !isDateLocked(s.dateKey))
       : null;
     const calMonthClass = (pendingFx && pendingFx.type === 'cal-month')
@@ -2093,8 +2364,9 @@ const App = (() => {
                   else if (d.gymMissed) gymMarker = '<span class="cal-gym-miss-dot"></span>';
                   else if (d.gymDueToday) gymMarker = '<span class="cal-gym-due-dot"></span>';
 
+                  const canInspect = d.dateKey <= currentWeekEnd;
                   return `
-                    <button class="${cls}" onclick="${d.isFuture ? '' : `App.SelectCalDate('${d.dateKey}')`}">
+                    <button class="${cls}" onclick="${canInspect ? `App.SelectCalDate('${d.dateKey}')` : ''}">
                       <span class="tabular-nums" style="line-height:1;">${d.dayNum}</span>
                       ${gymMarker}
                     </button>
@@ -2140,10 +2412,23 @@ const App = (() => {
             ${selGymSlot && selGymSlot.missed ? '<span class="locked-tag" style="color:var(--red-300);border-color:rgba(239,68,68,0.5);">GYM MISSED</span>' : ''}
             ${selGymSlot && selGymSlot.scheduled && !selGymSlot.missed ? '<span class="due-badge">Gym Scheduled</span>' : ''}
             ${selGymSlot && selGymSlot.rescheduledOutTo ? `<span class="rest-badge">Gym &rarr; ${DAY_LABELS_SHORT[parseDateKey(selGymSlot.rescheduledOutTo).getDay()]}</span>` : ''}
-            ${locked ? `<span class="locked-tag">LOCKED (&gt;7D)</span>` : ''}
+            ${isFutureSel ? `<span class="due-badge">UPCOMING</span>` : (locked ? `<span class="locked-tag">LOCKED (&gt;7D)</span>` : '')}
           </div>
 
-          ${locked ? `
+          ${isFutureSel ? `
+            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+              ${selMissedToShift ? `
+                <button class="step-btn smooth-ui"
+                        style="color:var(--sky-300);border-color:rgba(56,189,248,0.5);"
+                        onclick="App.RescheduleGymDay('${selMissedToShift.dateKey}', '${selKey}')">
+                  Shift ${DAY_LABELS_SHORT[selMissedToShift.dow]} &rarr; Here
+                </button>
+              ` : ''}
+              <span class="step-btn" style="pointer-events:none;color:var(--text-slate-500);">
+                ${selGymSlot && selGymSlot.scheduled ? 'Scheduled Gym Day' : 'Upcoming Day'}
+              </span>
+            </div>
+          ` : locked ? `
             <span class="step-btn" style="pointer-events:none;display:inline-flex;align-items:center;gap:6px;${selGym ? 'border-color:rgba(56,189,248,0.45);color:var(--sky-300);' : 'color:var(--text-slate-500);'}">
               <span style="width:8px;height:8px;border-radius:50%;background:${selGym ? 'var(--sky-400)' : '#475569'};"></span>
               <span>${selGym ? 'Gym Visited' : 'No Gym Visit'}</span>
@@ -2183,7 +2468,7 @@ const App = (() => {
                 <div style="min-width:0;">
                   <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
                     <span class="ex-title">${escapeHtml(ex.name)}</span>
-                    ${ex.scheduleMode === 'custom'
+                    ${getExerciseScheduleForDate(ex, selKey).mode === 'custom'
                       ? (isDue ? '<span class="due-badge">Due</span>' : '<span class="rest-badge">Rest</span>')
                       : ''}
                     ${dayTarget !== ex.target ? `<span class="rest-badge" title="Target active on this date">Then ${dayTarget}</span>` : ''}
@@ -2193,7 +2478,11 @@ const App = (() => {
                   </div>
                 </div>
 
-                ${locked ? `
+                ${isFutureSel ? `
+                  <div class="tabular-nums ${isDue ? 'text-sky' : 'text-muted'}" style="font-size:0.75rem;font-weight:700;">
+                    ${isDue ? `Due (${dayTarget} ${escapeHtml(ex.unit)})` : 'Rest'}
+                  </div>
+                ` : locked ? `
                   <div class="tabular-nums ${tone.text}" style="font-size:0.75rem;font-weight:700;">
                     ${met ? 'Target Met' : !isDue ? (val > 0 ? 'Optional' : 'Rest') : val > 0 ? 'Incomplete' : 'Missed (0)'}
                   </div>
@@ -2249,7 +2538,7 @@ const App = (() => {
     }
 
     if (period === 'weekly') {
-      const curMon = getMondayKey(today);
+      const curMon = getSundayKey(today);
       const points = [];
       for (let w = 6; w >= 0; w--) {
         const mKey = addDays(curMon, -w * 7);
@@ -2260,20 +2549,25 @@ const App = (() => {
         for (let d = 0; d < 7; d++) {
           const k = addDays(mKey, d);
           if (k <= today) {
-            sum += getExerciseVal(k, ex.id);
-            targetSum += getExerciseTargetForDate(ex, k);
-            daysCount++;
+            const val = getExerciseVal(k, ex.id);
+            const due = isExerciseDueOnDate(ex, k);
+            if (due || val > 0) {
+              sum += val;
+              targetSum += getExerciseTargetForDate(ex, k);
+              daysCount++;
+            }
           }
         }
         const v = daysCount > 0 ? Math.round(sum / daysCount) : 0;
         const t = daysCount > 0 ? Math.round(targetSum / daysCount) : getExerciseTargetForDate(ex, today);
         const isCurrent = w === 0;
-        let hex = '#EF4444';
-        if (v >= t) hex = '#10B981';
-        else if (v > 0) hex = '#F59E0B';
-        points.push({ short: `W${wkNum}`, v, target: t, isCurrent, hex });
+        const isRest = daysCount === 0;
+        let hex = isRest ? '#64748B' : '#EF4444';
+        if (!isRest && v >= t) hex = '#10B981';
+        else if (!isRest && v > 0) hex = '#F59E0B';
+        points.push({ short: `W${wkNum}`, v, target: t, isRest, isCurrent, hex });
       }
-      return { subtitle: 'Weekly daily-avg vs. target', points };
+      return { subtitle: 'Weekly scheduled-day avg vs. target', points };
     }
 
     if (period === 'monthly') {
@@ -2291,20 +2585,25 @@ const App = (() => {
         for (let day = 1; day <= lastDay; day++) {
           const k = toDateKey(new Date(yr, mo, day, 12, 0, 0));
           if (k <= today && k >= state.trackingStartDate) {
-            sum += getExerciseVal(k, ex.id);
-            targetSum += getExerciseTargetForDate(ex, k);
-            count++;
+            const val = getExerciseVal(k, ex.id);
+            const due = isExerciseDueOnDate(ex, k);
+            if (due || val > 0) {
+              sum += val;
+              targetSum += getExerciseTargetForDate(ex, k);
+              count++;
+            }
           }
         }
         const v = count > 0 ? Math.round(sum / count) : 0;
         const t = count > 0 ? Math.round(targetSum / count) : getExerciseTargetForDate(ex, today);
         const isCurrent = m === 0;
-        let hex = '#EF4444';
-        if (v >= t) hex = '#10B981';
-        else if (v > 0) hex = '#F59E0B';
-        points.push({ short, v, target: t, isCurrent, hex });
+        const isRest = count === 0;
+        let hex = isRest ? '#64748B' : '#EF4444';
+        if (!isRest && v >= t) hex = '#10B981';
+        else if (!isRest && v > 0) hex = '#F59E0B';
+        points.push({ short, v, target: t, isRest, isCurrent, hex });
       }
-      return { subtitle: 'Monthly daily-avg vs. target', points };
+      return { subtitle: 'Monthly scheduled-day avg vs. target', points };
     }
 
     // 'all': Divide range from trackingStartDate to today into 7 equal buckets
@@ -2320,21 +2619,26 @@ const App = (() => {
       let cursor = startKey;
       while (cursor <= endKey && cursor <= today) {
         if (cursor >= state.trackingStartDate) {
-          sum += getExerciseVal(cursor, ex.id);
-          targetSum += getExerciseTargetForDate(ex, cursor);
-          count++;
+          const val = getExerciseVal(cursor, ex.id);
+          const due = isExerciseDueOnDate(ex, cursor);
+          if (due || val > 0) {
+            sum += val;
+            targetSum += getExerciseTargetForDate(ex, cursor);
+            count++;
+          }
         }
         cursor = addDays(cursor, 1);
       }
       const v = count > 0 ? Math.round(sum / count) : 0;
       const t = count > 0 ? Math.round(targetSum / count) : getExerciseTargetForDate(ex, today);
       const isCurrent = b === 0;
+      const isRest = count === 0;
       const dt = parseDateKey(endKey);
       const short = dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-      let hex = '#EF4444';
-      if (v >= t) hex = '#10B981';
-      else if (v > 0) hex = '#F59E0B';
-      points.push({ short, v, target: t, isCurrent, hex });
+      let hex = isRest ? '#64748B' : '#EF4444';
+      if (!isRest && v >= t) hex = '#10B981';
+      else if (!isRest && v > 0) hex = '#F59E0B';
+      points.push({ short, v, target: t, isRest, isCurrent, hex });
     }
     return { subtitle: 'All-time progression vs. target', points };
   }
@@ -2369,7 +2673,7 @@ const App = (() => {
       if (val > allTimePR) allTimePR = val;
     });
     const prTone = getMetricTone(allTimePR, currentTarget);
-    const curMon = getMondayKey(today);
+    const curMon = getSundayKey(today);
     const gymWeeks = [];
     for (let w = 5; w >= 0; w--) {
       const mKey = addDays(curMon, -w * 7);
@@ -2699,6 +3003,7 @@ const App = (() => {
                     <div class="day-7-pills">
                       ${DAY_LABELS_SHORT.map((lbl, dow) => `
                         <button class="day-pill ${schedDays.includes(dow) ? 'on' : ''}"
+                                aria-pressed="${schedDays.includes(dow) ? 'true' : 'false'}"
                                 onclick="App.ToggleExerciseScheduleDay('${ex.id}', ${dow})">${lbl}</button>
                       `).join('')}
                     </div>
@@ -2784,6 +3089,7 @@ const App = (() => {
             <div class="day-7-pills">
               ${DAY_LABELS_SHORT.map((lbl, dow) => `
                 <button class="day-pill ${gymDays.includes(dow) ? 'gym-on' : ''}"
+                        aria-pressed="${gymDays.includes(dow) ? 'true' : 'false'}"
                         onclick="App.ToggleGymScheduleDay(${dow})">${lbl}</button>
               `).join('')}
             </div>
@@ -3129,7 +3435,7 @@ const App = (() => {
     }
 
     return `
-      <div class="settings-drawer" onclick="event.stopPropagation()">
+      <div class="settings-drawer" role="dialog" aria-modal="true" aria-label="Settings and Account" onclick="event.stopPropagation()">
         <div class="settings-drawer-header">
           <div>
             <div class="brand-name" style="font-size:0.85rem;">SETTINGS &amp; ACCOUNT</div>
@@ -3250,14 +3556,24 @@ const App = (() => {
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   function render() {
+    stateRenderRev++;
     renderHeader();
     renderAuthGate();
-    renderSettingsOverlay();
     const main = document.getElementById('main-view');
+    if (isSessionLocked) {
+      if (ui.settingsOpen) {
+        ui.settingsOpen = false;
+      }
+      renderSettingsOverlay();
+      if (main) main.innerHTML = '';
+      return;
+    }
+    renderSettingsOverlay();
     if (!main) return;
 
     const prevWidths = {};
@@ -3320,16 +3636,37 @@ const App = (() => {
       const btn = document.getElementById('dock-' + s);
       if (btn) {
         btn.className = `nav-tab-btn smooth-ui ${ui.screen === s ? 'active' : ''}`;
+        btn.setAttribute('aria-current', ui.screen === s ? 'page' : 'false');
       }
     });
   }
 
   window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && ui.settingsOpen) {
+    if (e.key === 'Escape' && ui.settingsOpen && !isSessionLocked) {
       captureSettingsInputsIntoState();
       ui.settingsOpen = false;
       ui.showResetConfirm = false;
       render();
+      return;
+    }
+    if (e.key === 'Tab' && (isSessionLocked || ui.settingsOpen)) {
+      const modalRoot = document.getElementById(isSessionLocked ? 'auth-gate-overlay' : 'settings-overlay');
+      if (modalRoot && typeof modalRoot.querySelectorAll === 'function') {
+        const focusables = Array.from(
+          modalRoot.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])')
+        );
+        if (focusables.length > 0) {
+          const first = focusables[0];
+          const last = focusables[focusables.length - 1];
+          if (e.shiftKey && document.activeElement === first) {
+            e.preventDefault();
+            last.focus();
+          } else if (!e.shiftKey && document.activeElement === last) {
+            e.preventDefault();
+            first.focus();
+          }
+        }
+      }
     }
   });
 
@@ -3341,7 +3678,7 @@ const App = (() => {
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=21').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=22').then((reg) => {
         if (reg && reg.update) reg.update();
       }).catch(() => {});
     });
@@ -3386,7 +3723,7 @@ const App = (() => {
     if (document.visibilityState === 'visible' && isCloudConfigured(state) && !isUserTypingInInput()) {
       pullFromCloud({ silent: true, onlyIfNewer: true });
     }
-  }, 10000);
+  }, 45000);
 
   return {
     SetScreen(scr) {
@@ -3454,6 +3791,7 @@ const App = (() => {
         return;
       }
       const log = getDayLog(dateKey);
+      log.updatedAt = Math.max(Date.now(), (Number(log.updatedAt) || 0) + 1);
       const hitIds = [];
       dueExercises.forEach(ex => {
         const dayTarget = getExerciseTargetForDate(ex, dateKey);
@@ -3469,11 +3807,13 @@ const App = (() => {
       showToast(`All ${dueExercises.length} due target${dueExercises.length === 1 ? '' : 's'} marked complete`);
     },
     BumpExercise(dateKey, exId, delta) {
+      if (isSessionLocked) return;
       if (isDateLocked(dateKey)) {
         showToast('Locked: entries older than 7 days cannot be edited');
         return;
       }
       const log = getDayLog(dateKey);
+      log.updatedAt = Math.max(Date.now(), (Number(log.updatedAt) || 0) + 1);
       const prevVal = Number(log.exercises[exId]) || 0;
       const nextVal = Math.max(0, prevVal + delta);
       log.exercises[exId] = nextVal;
@@ -3485,11 +3825,13 @@ const App = (() => {
       saveState(true);
     },
     SetExactExercise(dateKey, exId, val) {
+      if (isSessionLocked) return;
       if (isDateLocked(dateKey)) {
         showToast('Locked: entries older than 7 days cannot be edited');
         return;
       }
       const log = getDayLog(dateKey);
+      log.updatedAt = Math.max(Date.now(), (Number(log.updatedAt) || 0) + 1);
       const prevVal = Number(log.exercises[exId]) || 0;
       const nextVal = Math.max(0, Number(val) || 0);
       log.exercises[exId] = nextVal;
@@ -3501,11 +3843,13 @@ const App = (() => {
       saveState(true);
     },
     ToggleGym(dateKey) {
+      if (isSessionLocked) return;
       if (isDateLocked(dateKey)) {
         showToast('Locked: entries older than 7 days cannot be edited');
         return;
       }
       const log = getDayLog(dateKey);
+      log.updatedAt = Math.max(Date.now(), (Number(log.updatedAt) || 0) + 1);
       log.gym = !log.gym;
       pendingFx = { type: 'gym-toggle', dateKey };
       saveState(true);
@@ -3526,7 +3870,9 @@ const App = (() => {
       render();
     },
     SelectCalDate(dateKey) {
-      if (dateKey <= toDateKey()) {
+      const today = toDateKey();
+      const currentWeekEnd = addDays(getSundayKey(today), 6);
+      if (dateKey <= currentWeekEnd) {
         ui.selectedCalDate = dateKey;
         pendingFx = { type: 'cal-select', dateKey };
         render();
@@ -3586,11 +3932,13 @@ const App = (() => {
       const target = Math.max(1, Number(targetEl ? targetEl.value : 30) || 30);
       const unit = unitEl ? unitEl.value : 'reps';
       const id = 'ex_' + Date.now();
+      const today = toDateKey();
       state.exercises.push({
         id,
         name,
         target,
         unit,
+        createdAtDate: today,
         scheduleMode: 'daily',
         scheduleTargetCount: 7,
         scheduleDays: [0, 1, 2, 3, 4, 5, 6]
@@ -3598,7 +3946,16 @@ const App = (() => {
       if (!state.targetHistory || typeof state.targetHistory !== 'object') {
         state.targetHistory = {};
       }
-      state.targetHistory[id] = [{ date: toDateKey(), target }];
+      state.targetHistory[id] = [{ date: today, target }];
+      if (!state.exerciseScheduleHistory || typeof state.exerciseScheduleHistory !== 'object') {
+        state.exerciseScheduleHistory = {};
+      }
+      state.exerciseScheduleHistory[id] = [{
+        date: today,
+        mode: 'daily',
+        count: 7,
+        days: [0, 1, 2, 3, 4, 5, 6]
+      }];
       ui.confirmRemoveExId = null;
       pendingFx = { type: 'goal-move', exId: id };
       saveState(true);
@@ -3620,6 +3977,9 @@ const App = (() => {
       if (state.targetHistory && state.targetHistory[id]) {
         delete state.targetHistory[id];
       }
+      if (state.exerciseScheduleHistory && state.exerciseScheduleHistory[id]) {
+        delete state.exerciseScheduleHistory[id];
+      }
       if (ui.chartExerciseId === id) {
         ui.chartExerciseId = state.exercises[0].id;
       }
@@ -3629,12 +3989,18 @@ const App = (() => {
     SetExerciseScheduleMode(exId, mode) {
       const ex = state.exercises.find(e => e.id === exId);
       if (!ex) return;
+      const prevSched = {
+        mode: ex.scheduleMode === 'custom' ? 'custom' : 'daily',
+        count: ex.scheduleMode === 'custom' ? Math.max(1, Math.min(6, Number(ex.scheduleTargetCount) || 3)) : 7,
+        days: [...getExerciseScheduleDays(ex)]
+      };
       if (mode === 'daily') {
         ex.scheduleMode = 'daily';
         ex.scheduleTargetCount = 7;
         ex.scheduleDays = [0, 1, 2, 3, 4, 5, 6];
+        recordExerciseScheduleChange(ex, prevSched);
         saveState(true);
-        showToast(`${ex.name}: Daily schedule`);
+        showToast(`${ex.name}: Daily schedule (from Today forward)`);
       } else {
         const cnt = (ex.scheduleTargetCount >= 1 && ex.scheduleTargetCount <= 6) ? ex.scheduleTargetCount : 3;
         const base = (Array.isArray(ex.scheduleDays) && ex.scheduleDays.length < 7)
@@ -3648,6 +4014,7 @@ const App = (() => {
           if (next === undefined) break;
           ex.scheduleDays.push(next);
         }
+        recordExerciseScheduleChange(ex, prevSched);
         saveState(true);
         showToast(`${ex.name}: Custom ${formatScheduleSummary('custom', ex.scheduleDays, cnt)}`);
       }
@@ -3660,6 +4027,11 @@ const App = (() => {
         App.SetExerciseScheduleMode(exId, 'daily');
         return;
       }
+      const prevSched = {
+        mode: ex.scheduleMode === 'custom' ? 'custom' : 'daily',
+        count: ex.scheduleMode === 'custom' ? Math.max(1, Math.min(6, Number(ex.scheduleTargetCount) || 3)) : 7,
+        days: [...getExerciseScheduleDays(ex)]
+      };
       const c = Math.max(1, Math.min(6, raw));
       const base = (ex.scheduleMode === 'custom' && Array.isArray(ex.scheduleDays) && ex.scheduleDays.length < 7)
         ? ex.scheduleDays
@@ -3673,6 +4045,7 @@ const App = (() => {
       ex.scheduleMode = 'custom';
       ex.scheduleTargetCount = c;
       ex.scheduleDays = nextDays;
+      recordExerciseScheduleChange(ex, prevSched);
       saveState(true);
       showToast(`${ex.name}: ${c}d/wk (${nextDays.slice().sort((a, b) => a - b).map(d => DAY_LABELS_SHORT[d]).join(', ')})`);
     },
@@ -3681,7 +4054,12 @@ const App = (() => {
       if (!ex) return;
       const d = Number(dow);
       if (!Number.isInteger(d) || d < 0 || d > 6) return;
-      const targetCount = Math.max(1, Math.min(6, Number(ex.scheduleTargetCount) || 3));
+      const prevSched = {
+        mode: ex.scheduleMode === 'custom' ? 'custom' : 'daily',
+        count: ex.scheduleMode === 'custom' ? Math.max(1, Math.min(6, Number(ex.scheduleTargetCount) || 3)) : 7,
+        days: [...getExerciseScheduleDays(ex)]
+      };
+      let targetCount = Math.max(1, Math.min(6, Number(ex.scheduleTargetCount) || 3));
       let days = (ex.scheduleMode === 'custom' && Array.isArray(ex.scheduleDays))
         ? normalizeDaysList(ex.scheduleDays, targetCount)
         : defaultDaysForCount(targetCount);
@@ -3691,13 +4069,16 @@ const App = (() => {
           return;
         }
         days = days.filter(x => x !== d);
+        targetCount = days.length;
       } else {
         while (days.length >= targetCount) days.shift();
         days.push(d);
+        targetCount = days.length;
       }
       ex.scheduleMode = 'custom';
       ex.scheduleTargetCount = targetCount;
       ex.scheduleDays = days;
+      recordExerciseScheduleChange(ex, prevSched);
       saveState(true);
     },
     SetGymScheduleMode(mode) {
@@ -3768,7 +4149,7 @@ const App = (() => {
         target: state.weeklyGymTarget,
         days: [...(state.gymScheduleDays || [])]
       };
-      const targetCount = Math.max(1, Math.min(6, Number(state.weeklyGymTarget) || 4));
+      let targetCount = Math.max(1, Math.min(6, Number(state.weeklyGymTarget) || 4));
       let days = (state.gymScheduleMode === 'custom' && Array.isArray(state.gymScheduleDays))
         ? normalizeDaysList(state.gymScheduleDays, targetCount)
         : defaultDaysForCount(targetCount);
@@ -3778,9 +4159,11 @@ const App = (() => {
           return;
         }
         days = days.filter(x => x !== d);
+        targetCount = days.length;
       } else {
         while (days.length >= targetCount) days.shift();
         days.push(d);
+        targetCount = days.length;
       }
       state.gymScheduleMode = 'custom';
       state.weeklyGymTarget = targetCount;
@@ -3795,8 +4178,8 @@ const App = (() => {
         showToast('Locked: entries older than 7 days cannot be rescheduled');
         return;
       }
-      const monKey = getMondayKey(fromDate);
-      if (monKey !== getMondayKey(toDate)) {
+      const monKey = getSundayKey(fromDate);
+      if (monKey !== getSundayKey(toDate)) {
         showToast('Gym reschedules must stay within the same Sun–Sat week');
         return;
       }
@@ -3849,7 +4232,7 @@ const App = (() => {
       if (!state.gymReschedules || !Array.isArray(state.gymReschedules[mondayKey])) return;
       const entry = state.gymReschedules[mondayKey].find(r => r && r.to === toDate);
       const today = toDateKey();
-      if (entry && (diffDaysBetween(today, entry.from) > EDIT_WINDOW_DAYS || diffDaysBetween(today, entry.to) > EDIT_WINDOW_DAYS)) {
+      if (entry && diffDaysBetween(today, entry.from) > EDIT_WINDOW_DAYS && diffDaysBetween(today, entry.to) > EDIT_WINDOW_DAYS) {
         showToast('Locked: entries older than 7 days cannot be modified');
         return;
       }
@@ -3992,7 +4375,7 @@ const App = (() => {
       if (entered && entered === state.syncPasskey) {
         isSessionLocked = false;
         sessionStorage.setItem(SESSION_UNLOCK_KEY, '1');
-        renderAuthGate();
+        render();
         showToast('Session unlocked');
       } else {
         const card = document.querySelector('#auth-gate-overlay .auth-gate-card');
@@ -4008,7 +4391,7 @@ const App = (() => {
       if (hasLockCred) {
         isSessionLocked = true;
         sessionStorage.removeItem(SESSION_UNLOCK_KEY);
-        renderAuthGate();
+        render();
       } else {
         ui.settingsOpen = true;
         ui.settingsSection = 'security';
@@ -4110,6 +4493,8 @@ const App = (() => {
           }
         } catch (err) {
           showToast('Failed to read JSON file');
+        } finally {
+          try { event.target.value = ''; } catch (_) {}
         }
       };
       reader.readAsText(file);
@@ -4142,11 +4527,19 @@ const App = (() => {
       state.gymReschedules = {};
       state.trackingStartDate = today;
       state.targetHistory = {};
+      state.exerciseScheduleHistory = {};
       state.exercises.forEach(ex => {
+        ex.createdAtDate = today;
         state.targetHistory[ex.id] = [{ date: today, target: ex.target }];
+        state.exerciseScheduleHistory[ex.id] = [{
+          date: today,
+          mode: ex.scheduleMode || 'daily',
+          count: ex.scheduleTargetCount || 7,
+          days: [...getExerciseScheduleDays(ex)]
+        }];
       });
       state.gymHistory = [{
-        week: getMondayKey(today),
+        week: getSundayKey(today),
         mode: state.gymScheduleMode,
         target: state.weeklyGymTarget,
         days: [...(state.gymScheduleDays || [])]
