@@ -193,6 +193,8 @@ const App = (() => {
       st.targetHistory = {};
     }
 
+    const needsV19Heal = !st.targetHistoryVersion || st.targetHistoryVersion < 2;
+
     st.exercises = (Array.isArray(st.exercises) ? st.exercises : []).map(ex => {
       const cleanTarget = Math.max(1, Number(ex.target) || 1);
       const rawHist = Array.isArray(st.targetHistory[ex.id]) ? st.targetHistory[ex.id] : [];
@@ -205,6 +207,16 @@ const App = (() => {
       const histDates = Object.keys(byDate).sort();
       if (histDates.length === 0) {
         st.targetHistory[ex.id] = [{ date: baselineDate, target: cleanTarget }];
+      } else if (needsV19Heal && histDates.length === 1 && byDate[histDates[0]] !== cleanTarget) {
+        // Recover from v19 bug where createDefaultState() seeded default targets (e.g. 50) over user targets (e.g. 30)
+        const polluted = byDate[histDates[0]];
+        st.targetHistory[ex.id] = [{ date: histDates[0], target: cleanTarget }];
+        Object.keys(st.logs || {}).forEach(logKey => {
+          const entry = st.logs[logKey];
+          if (entry && entry.targets && entry.targets[ex.id] === polluted) {
+            entry.targets[ex.id] = cleanTarget;
+          }
+        });
       } else {
         st.targetHistory[ex.id] = histDates.map(d => ({ date: d, target: byDate[d] }));
       }
@@ -254,9 +266,25 @@ const App = (() => {
         target: st.weeklyGymTarget,
         days: [...st.gymScheduleDays]
       }];
+    } else if (needsV19Heal && gymWeeks.length === 1) {
+      // Recover from v19 bug where createDefaultState() seeded default [1,3,5,6] (4d) over user's gym schedule
+      const only = gymByWeek[gymWeeks[0]];
+      const curDaysSorted = [...st.gymScheduleDays].sort((a, b) => a - b).join(',');
+      const onlyDaysSorted = [...(only.days || [])].sort((a, b) => a - b).join(',');
+      if (only.mode !== st.gymScheduleMode || only.target !== st.weeklyGymTarget || onlyDaysSorted !== curDaysSorted) {
+        st.gymHistory = [{
+          week: gymWeeks[0],
+          mode: st.gymScheduleMode,
+          target: st.weeklyGymTarget,
+          days: [...st.gymScheduleDays]
+        }];
+      } else {
+        st.gymHistory = [only];
+      }
     } else {
       st.gymHistory = gymWeeks.map(w => gymByWeek[w]);
     }
+    st.targetHistoryVersion = 2;
     return st;
   }
 
@@ -264,9 +292,9 @@ const App = (() => {
   function createDefaultState() {
     const today = toDateKey();
     const startDate = addDays(today, -28);
-    const baselineSun = getMondayKey(startDate);
     return {
       version: 2,
+      targetHistoryVersion: 0,
       updatedAt: 0,
       profileName: DEFAULT_PROFILE_NAME,
       themeMode: 'dark', // 'dark' | 'light' | 'system'
@@ -279,9 +307,7 @@ const App = (() => {
       weeklyGymTarget: 4,
       gymScheduleMode: 'custom', // 'daily' | 'custom'
       gymScheduleDays: [1, 3, 5, 6], // Mon, Wed, Fri, Sat
-      gymHistory: [
-        { week: baselineSun, mode: 'custom', target: 4, days: [1, 3, 5, 6] }
-      ],
+      gymHistory: [],
       gymReschedules: {}, // { [weekSunKey]: [{ from, to }] }
       syncProvider: 'gdrive', // 'gdrive' (Passkey Google Drive) | 'gist' (Private GitHub Gist)
       syncUrl: '',
@@ -297,11 +323,7 @@ const App = (() => {
         { id: 'situps',  name: 'Sit-ups',    target: 50, unit: 'reps', scheduleMode: 'daily', scheduleTargetCount: 7, scheduleDays: [0, 1, 2, 3, 4, 5, 6] },
         { id: 'squats',  name: 'Air Squats', target: 40, unit: 'reps', scheduleMode: 'daily', scheduleTargetCount: 7, scheduleDays: [0, 1, 2, 3, 4, 5, 6] }
       ],
-      targetHistory: {
-        pushups: [{ date: startDate, target: 50 }],
-        situps:  [{ date: startDate, target: 50 }],
-        squats:  [{ date: startDate, target: 40 }]
-      },
+      targetHistory: {},
       logs: {}
     };
   }
@@ -337,6 +359,7 @@ const App = (() => {
       target: st.weeklyGymTarget || 4,
       days: Array.isArray(st.gymScheduleDays) ? [...st.gymScheduleDays] : [1, 3, 5, 6]
     }];
+    st.targetHistoryVersion = 2;
 
     for (let offset = -60; offset <= 0; offset++) {
       const k = addDays(today, offset);
@@ -428,6 +451,9 @@ const App = (() => {
           const merged = normalizeState({ ...createDefaultState(), ...parsed });
           if (merged.syncUrl && !merged.githubToken) {
             merged.syncProvider = 'gdrive';
+          }
+          if (!parsed.targetHistoryVersion || parsed.targetHistoryVersion < 2) {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
           }
           return merged;
         }
@@ -3299,7 +3325,7 @@ const App = (() => {
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=19').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=20').then((reg) => {
         if (reg && reg.update) reg.update();
       }).catch(() => {});
     });
@@ -4109,6 +4135,7 @@ const App = (() => {
         target: state.weeklyGymTarget,
         days: [...(state.gymScheduleDays || [])]
       }];
+      state.targetHistoryVersion = 2;
       ui.activeDate = today;
       ui.selectedCalDate = today;
       ui.showResetConfirm = false;
