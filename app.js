@@ -181,11 +181,39 @@ const App = (() => {
     if (!st.gymReschedules || typeof st.gymReschedules !== 'object' || Array.isArray(st.gymReschedules)) {
       st.gymReschedules = {};
     }
+    const logDates = Object.keys(st.logs || {}).filter(k => /^\d{4}-\d{2}-\d{2}$/.test(k)).sort();
+    let baselineDate = (st.trackingStartDate && /^\d{4}-\d{2}-\d{2}$/.test(st.trackingStartDate))
+      ? st.trackingStartDate
+      : toDateKey();
+    if (logDates.length > 0 && logDates[0] < baselineDate) {
+      baselineDate = logDates[0];
+    }
+
+    if (!st.targetHistory || typeof st.targetHistory !== 'object' || Array.isArray(st.targetHistory)) {
+      st.targetHistory = {};
+    }
+
     st.exercises = (Array.isArray(st.exercises) ? st.exercises : []).map(ex => {
+      const cleanTarget = Math.max(1, Number(ex.target) || 1);
+      const rawHist = Array.isArray(st.targetHistory[ex.id]) ? st.targetHistory[ex.id] : [];
+      const byDate = {};
+      rawHist.forEach(item => {
+        if (item && /^\d{4}-\d{2}-\d{2}$/.test(item.date) && Number(item.target) > 0) {
+          byDate[item.date] = Math.max(1, Number(item.target));
+        }
+      });
+      const histDates = Object.keys(byDate).sort();
+      if (histDates.length === 0) {
+        st.targetHistory[ex.id] = [{ date: baselineDate, target: cleanTarget }];
+      } else {
+        st.targetHistory[ex.id] = histDates.map(d => ({ date: d, target: byDate[d] }));
+      }
+
       const mode = ex.scheduleMode === 'custom' ? 'custom' : 'daily';
       if (mode === 'daily') {
         return {
           ...ex,
+          target: cleanTarget,
           scheduleMode: 'daily',
           scheduleTargetCount: 7,
           scheduleDays: [0, 1, 2, 3, 4, 5, 6]
@@ -195,17 +223,48 @@ const App = (() => {
       const count = Math.max(1, Math.min(6, Number(ex.scheduleTargetCount) || days.length));
       return {
         ...ex,
+        target: cleanTarget,
         scheduleMode: 'custom',
         scheduleTargetCount: count,
         scheduleDays: days.slice(0, Math.max(1, count))
       };
     });
+
+    const baselineSun = getMondayKey(baselineDate);
+    const rawGymHist = Array.isArray(st.gymHistory) ? st.gymHistory : [];
+    const gymByWeek = {};
+    rawGymHist.forEach(item => {
+      if (item && /^\d{4}-\d{2}-\d{2}$/.test(item.week)) {
+        const wKey = getMondayKey(item.week);
+        const t = Math.max(1, Math.min(7, Number(item.target) || 4));
+        const m = item.mode === 'daily' || t >= 7 ? 'daily' : 'custom';
+        gymByWeek[wKey] = {
+          week: wKey,
+          mode: m,
+          target: m === 'daily' ? 7 : t,
+          days: m === 'daily' ? [0, 1, 2, 3, 4, 5, 6] : normalizeDaysList(item.days, t).slice(0, t)
+        };
+      }
+    });
+    const gymWeeks = Object.keys(gymByWeek).sort();
+    if (gymWeeks.length === 0) {
+      st.gymHistory = [{
+        week: baselineSun,
+        mode: st.gymScheduleMode,
+        target: st.weeklyGymTarget,
+        days: [...st.gymScheduleDays]
+      }];
+    } else {
+      st.gymHistory = gymWeeks.map(w => gymByWeek[w]);
+    }
     return st;
   }
 
   // --- Default State & Sample History Seeder ---
   function createDefaultState() {
     const today = toDateKey();
+    const startDate = addDays(today, -28);
+    const baselineSun = getMondayKey(startDate);
     return {
       version: 2,
       updatedAt: 0,
@@ -216,10 +275,13 @@ const App = (() => {
       eveningReminderTime: '20:00',
       lastMorningNotifDate: '',
       lastEveningNotifDate: '',
-      trackingStartDate: addDays(today, -28),
+      trackingStartDate: startDate,
       weeklyGymTarget: 4,
       gymScheduleMode: 'custom', // 'daily' | 'custom'
       gymScheduleDays: [1, 3, 5, 6], // Mon, Wed, Fri, Sat
+      gymHistory: [
+        { week: baselineSun, mode: 'custom', target: 4, days: [1, 3, 5, 6] }
+      ],
       gymReschedules: {}, // { [weekSunKey]: [{ from, to }] }
       syncProvider: 'gdrive', // 'gdrive' (Passkey Google Drive) | 'gist' (Private GitHub Gist)
       syncUrl: '',
@@ -235,6 +297,11 @@ const App = (() => {
         { id: 'situps',  name: 'Sit-ups',    target: 50, unit: 'reps', scheduleMode: 'daily', scheduleTargetCount: 7, scheduleDays: [0, 1, 2, 3, 4, 5, 6] },
         { id: 'squats',  name: 'Air Squats', target: 40, unit: 'reps', scheduleMode: 'daily', scheduleTargetCount: 7, scheduleDays: [0, 1, 2, 3, 4, 5, 6] }
       ],
+      targetHistory: {
+        pushups: [{ date: startDate, target: 50 }],
+        situps:  [{ date: startDate, target: 50 }],
+        squats:  [{ date: startDate, target: 40 }]
+      },
       logs: {}
     };
   }
@@ -257,8 +324,19 @@ const App = (() => {
 
   function seedSampleHistory(st) {
     const today = toDateKey();
-    st.trackingStartDate = addDays(today, -60);
+    const startDate = addDays(today, -60);
+    st.trackingStartDate = startDate;
     st.logs = {};
+    st.targetHistory = {};
+    st.exercises.forEach(ex => {
+      st.targetHistory[ex.id] = [{ date: startDate, target: ex.target }];
+    });
+    st.gymHistory = [{
+      week: getMondayKey(startDate),
+      mode: st.gymScheduleMode || 'custom',
+      target: st.weeklyGymTarget || 4,
+      days: Array.isArray(st.gymScheduleDays) ? [...st.gymScheduleDays] : [1, 3, 5, 6]
+    }];
 
     for (let offset = -60; offset <= 0; offset++) {
       const k = addDays(today, offset);
@@ -267,7 +345,9 @@ const App = (() => {
       const isGymDay = dow === 1 || dow === 3 || dow === 5 || (dow === 6 && offset % 2 === 0);
 
       const exValues = {};
+      const exTargets = {};
       st.exercises.forEach((ex, idx) => {
+        exTargets[ex.id] = ex.target;
         if (offset === 0) {
           // Today in progress: 1st completed, 2nd incomplete (Amber), 3rd not started (Red 0)
           if (idx === 0) exValues[ex.id] = ex.target;
@@ -290,6 +370,7 @@ const App = (() => {
 
       st.logs[k] = {
         exercises: exValues,
+        targets: exTargets,
         gym: offset === 0 ? false : isGymDay
       };
     }
@@ -399,6 +480,126 @@ const App = (() => {
     return Number(entry.exercises[exId]) || 0;
   }
 
+  function getEarliestTrackingDate() {
+    const today = toDateKey();
+    let earliest = (state.trackingStartDate && /^\d{4}-\d{2}-\d{2}$/.test(state.trackingStartDate))
+      ? state.trackingStartDate
+      : today;
+    Object.keys(state.logs || {}).forEach(k => {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(k) && k < earliest) earliest = k;
+    });
+    return earliest;
+  }
+
+  function getExerciseTargetForDate(exOrId, dateKey) {
+    const ex = typeof exOrId === 'string'
+      ? state.exercises.find(e => e.id === exOrId)
+      : exOrId;
+    if (!ex) return 1;
+    const log = dateKey && state.logs && state.logs[dateKey];
+    if (log && log.targets && Number(log.targets[ex.id]) > 0) {
+      return Math.max(1, Number(log.targets[ex.id]));
+    }
+    const hist = state.targetHistory && state.targetHistory[ex.id];
+    if (dateKey && Array.isArray(hist) && hist.length > 0) {
+      let chosen = hist[0];
+      for (let i = 0; i < hist.length; i++) {
+        if (hist[i].date <= dateKey) chosen = hist[i];
+        else break;
+      }
+      if (chosen && Number(chosen.target) > 0) {
+        return Math.max(1, Number(chosen.target));
+      }
+    }
+    return Math.max(1, Number(ex.target) || 1);
+  }
+
+  function stampLogTargetForDate(log, ex, dateKey) {
+    if (!log || !ex) return;
+    if (!log.targets || typeof log.targets !== 'object') {
+      log.targets = {};
+    }
+    if (!(Number(log.targets[ex.id]) > 0)) {
+      log.targets[ex.id] = getExerciseTargetForDate(ex, dateKey);
+    }
+  }
+
+  function recordTargetChange(exId, prevTarget, nextTarget, effectiveDate = toDateKey()) {
+    if (!state.targetHistory || typeof state.targetHistory !== 'object') {
+      state.targetHistory = {};
+    }
+    const list = Array.isArray(state.targetHistory[exId]) ? [...state.targetHistory[exId]] : [];
+    const byDate = {};
+    list.forEach(item => {
+      if (item && /^\d{4}-\d{2}-\d{2}$/.test(item.date) && Number(item.target) > 0) {
+        byDate[item.date] = Math.max(1, Number(item.target));
+      }
+    });
+    const hasPriorAnchor = Object.keys(byDate).some(d => d < effectiveDate);
+    if (!hasPriorAnchor && Number(prevTarget) > 0) {
+      const earliest = getEarliestTrackingDate();
+      const anchorDate = earliest < effectiveDate ? earliest : addDays(effectiveDate, -1);
+      byDate[anchorDate] = Math.max(1, Number(prevTarget));
+    }
+    byDate[effectiveDate] = Math.max(1, Number(nextTarget) || 1);
+    state.targetHistory[exId] = Object.keys(byDate).sort().map(d => ({ date: d, target: byDate[d] }));
+
+    if (state.logs && state.logs[effectiveDate]) {
+      if (!state.logs[effectiveDate].targets || typeof state.logs[effectiveDate].targets !== 'object') {
+        state.logs[effectiveDate].targets = {};
+      }
+      state.logs[effectiveDate].targets[exId] = Math.max(1, Number(nextTarget) || 1);
+    }
+  }
+
+  function getGymRuleForWeek(mondayKey) {
+    const hist = Array.isArray(state.gymHistory) ? state.gymHistory : [];
+    if (hist.length > 0) {
+      let chosen = hist[0];
+      for (let i = 0; i < hist.length; i++) {
+        if (hist[i].week <= mondayKey) chosen = hist[i];
+        else break;
+      }
+      if (chosen) return chosen;
+    }
+    return {
+      week: mondayKey,
+      mode: state.gymScheduleMode === 'daily' ? 'daily' : 'custom',
+      target: Math.max(1, Math.min(7, Number(state.weeklyGymTarget) || 4)),
+      days: getGymBaseDays()
+    };
+  }
+
+  function recordGymRuleChange(prevRule, effectiveWeek = getMondayKey(toDateKey())) {
+    if (!Array.isArray(state.gymHistory)) {
+      state.gymHistory = [];
+    }
+    const byWeek = {};
+    state.gymHistory.forEach(item => {
+      if (item && /^\d{4}-\d{2}-\d{2}$/.test(item.week)) {
+        byWeek[item.week] = item;
+      }
+    });
+    const hasPriorWeek = Object.keys(byWeek).some(w => w < effectiveWeek);
+    if (!hasPriorWeek && prevRule) {
+      const earliestSun = getMondayKey(getEarliestTrackingDate());
+      const anchorWeek = earliestSun < effectiveWeek ? earliestSun : addDays(effectiveWeek, -7);
+      byWeek[anchorWeek] = {
+        week: anchorWeek,
+        mode: prevRule.mode,
+        target: prevRule.target,
+        days: [...prevRule.days]
+      };
+    }
+    byWeek[effectiveWeek] = {
+      week: effectiveWeek,
+      mode: state.gymScheduleMode,
+      target: state.weeklyGymTarget,
+      days: [...state.gymScheduleDays]
+    };
+    state.gymHistory = Object.keys(byWeek).sort().map(w => byWeek[w]);
+  }
+
   // --- Unified 3-State Color Helper ---
   // Completed (>= target) -> Green
   // Incomplete (> 0 && < target) -> Amber
@@ -439,7 +640,7 @@ const App = (() => {
   function isDayHomeMet(dateKey) {
     const due = getDueExercisesForDate(dateKey);
     if (due.length === 0) return false;
-    return due.every(ex => getExerciseVal(dateKey, ex.id) >= ex.target);
+    return due.every(ex => getExerciseVal(dateKey, ex.id) >= getExerciseTargetForDate(ex, dateKey));
   }
 
   function hasAnyExerciseProgress(dateKey) {
@@ -453,14 +654,14 @@ const App = (() => {
     if (due.length === 0) {
       if (hasAnyExerciseProgress(dateKey)) {
         const touched = state.exercises.filter(ex => getExerciseVal(dateKey, ex.id) > 0);
-        return touched.every(ex => getExerciseVal(dateKey, ex.id) >= ex.target) ? 'green' : 'amber';
+        return touched.every(ex => getExerciseVal(dateKey, ex.id) >= getExerciseTargetForDate(ex, dateKey)) ? 'green' : 'amber';
       }
       if (dateKey === today || dateKey >= state.trackingStartDate) {
         return 'rest';
       }
       return 'none';
     }
-    if (due.every(ex => getExerciseVal(dateKey, ex.id) >= ex.target)) return 'green';
+    if (due.every(ex => getExerciseVal(dateKey, ex.id) >= getExerciseTargetForDate(ex, dateKey))) return 'green';
     if (hasAnyExerciseProgress(dateKey)) return 'amber';
     const hasGym = Boolean(state.logs[dateKey] && state.logs[dateKey].gym);
     if (dateKey === today || dateKey >= state.trackingStartDate || hasGym) {
@@ -519,8 +720,9 @@ const App = (() => {
   function getWeekGymSummary(mondayKey) {
     const today = toDateKey();
     const currentMon = getMondayKey(today);
-    const isDaily = state.gymScheduleMode === 'daily';
-    const baseWeekdays = getGymBaseDays();
+    const rule = getGymRuleForWeek(mondayKey);
+    const isDaily = rule.mode === 'daily';
+    const baseWeekdays = isDaily ? [0, 1, 2, 3, 4, 5, 6] : normalizeDaysList(rule.days, rule.target || 4);
     const rawReschedules = (state.gymReschedules && Array.isArray(state.gymReschedules[mondayKey]))
       ? state.gymReschedules[mondayKey]
       : [];
@@ -581,7 +783,7 @@ const App = (() => {
       }
     });
 
-    const target = isDaily ? 7 : Math.max(1, Number(state.weeklyGymTarget) || baseWeekdays.length || 4);
+    const target = isDaily ? 7 : Math.max(1, Number(rule.target) || baseWeekdays.length || 4);
     const met = scheduledTotal > 0
       ? (missedCount === 0 && scheduledMet >= scheduledTotal && count >= Math.min(target, scheduledTotal))
       : (count >= target);
@@ -636,7 +838,7 @@ const App = (() => {
   function buildGoalReminderPayload(slot, forceTest = false) {
     const today = toDateKey();
     const dueToday = getDueExercisesForDate(today);
-    const unmet = dueToday.filter(ex => getExerciseVal(today, ex.id) < ex.target);
+    const unmet = dueToday.filter(ex => getExerciseVal(today, ex.id) < getExerciseTargetForDate(ex, today));
     const curMon = getMondayKey(today);
     const gymSum = getWeekGymSummary(curMon);
     const todayGymSlot = gymSum.days.find(d => d.dateKey === today);
@@ -661,7 +863,7 @@ const App = (() => {
     }
 
     const unmetSummary = unmet
-      .map(ex => `${ex.name} ${getExerciseVal(today, ex.id)}/${ex.target}`)
+      .map(ex => `${ex.name} ${getExerciseVal(today, ex.id)}/${getExerciseTargetForDate(ex, today)}`)
       .join(', ');
 
     const gymStatusLine = visitedGymToday
@@ -1396,7 +1598,7 @@ const App = (() => {
     const dueToday = getDueExercisesForDate(today);
     const avgPct = dueToday.length > 0
       ? Math.round(
-          (dueToday.reduce((acc, ex) => acc + Math.min(1, getExerciseVal(today, ex.id) / Math.max(1, ex.target)), 0) /
+          (dueToday.reduce((acc, ex) => acc + Math.min(1, getExerciseVal(today, ex.id) / Math.max(1, getExerciseTargetForDate(ex, today))), 0) /
             dueToday.length) * 100
         )
       : 100;
@@ -1456,9 +1658,10 @@ const App = (() => {
 
   function renderTodayExerciseCard(ex, dateKey, isDue) {
     const current = getExerciseVal(dateKey, ex.id);
-    const pct = Math.min(100, Math.round((current / Math.max(1, ex.target)) * 100));
-    const tone = getMetricTone(current, ex.target);
-    const done = current >= ex.target;
+    const dayTarget = getExerciseTargetForDate(ex, dateKey);
+    const pct = Math.min(100, Math.round((current / Math.max(1, dayTarget)) * 100));
+    const tone = getMetricTone(current, dayTarget);
+    const done = current >= dayTarget;
     const isBumpedEx = pendingFx && pendingFx.dateKey === dateKey &&
       ((pendingFx.type === 'ex-change' && pendingFx.exId === ex.id) || pendingFx.type === 'complete-all');
     const isTargetHitEx = pendingFx && pendingFx.dateKey === dateKey &&
@@ -1468,18 +1671,19 @@ const App = (() => {
     return `
       <div class="surface-inset ex-box ${isTargetHitEx ? 'fx-target-met' : ''}" data-ex-id="${ex.id}" style="${isDue ? '' : 'opacity:0.86;'}">
         <div class="ex-top-line">
-          <div style="display:flex;align-items:center;gap:6px;min-width:0;">
+          <div style="display:flex;align-items:center;gap:6px;min-width:0;flex-wrap:wrap;">
             <span class="ex-title" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(ex.name)}</span>
             ${ex.scheduleMode === 'custom'
               ? (isDue ? '<span class="due-badge">Due</span>' : '<span class="rest-badge">Rest</span>')
               : ''}
+            ${dayTarget !== ex.target ? `<span class="rest-badge" title="Target active on this date">Then ${dayTarget}</span>` : ''}
           </div>
           <div class="ex-input-group tabular-nums">
             <input type="number" min="0" value="${current}"
                    data-ex-id="${ex.id}"
                    class="num-input ${tone.text} tabular-nums ${isBumpedEx ? 'fx-val-pop' : ''}"
                    onchange="App.SetExactExercise('${dateKey}', '${ex.id}', this.value)" />
-            <span class="${tone.text}" style="font-weight:600;">/ ${ex.target} ${escapeHtml(ex.unit)}</span>
+            <span class="${tone.text}" style="font-weight:600;">/ ${dayTarget} ${escapeHtml(ex.unit)}</span>
           </div>
         </div>
 
@@ -1493,8 +1697,8 @@ const App = (() => {
           <button class="inc-btn tabular-nums smooth-ui" onclick="App.BumpExercise('${dateKey}', '${ex.id}', 5)">+5</button>
           <button class="inc-btn tabular-nums smooth-ui" onclick="App.BumpExercise('${dateKey}', '${ex.id}', 10)">+10</button>
           <button class="inc-btn target-btn ${done ? 'met' : ''} tabular-nums smooth-ui"
-                  onclick="App.SetExactExercise('${dateKey}', '${ex.id}', ${ex.target})">
-            ${ex.target}
+                  onclick="App.SetExactExercise('${dateKey}', '${ex.id}', ${dayTarget})">
+            ${dayTarget}
           </button>
         </div>
       </div>
@@ -1511,7 +1715,7 @@ const App = (() => {
 
     const dueExercises = getDueExercisesForDate(dateKey);
     const optionalExercises = state.exercises.filter(ex => !isExerciseDueOnDate(ex, dateKey));
-    const dueMetCount = dueExercises.filter(ex => getExerciseVal(dateKey, ex.id) >= ex.target).length;
+    const dueMetCount = dueExercises.filter(ex => getExerciseVal(dateKey, ex.id) >= getExerciseTargetForDate(ex, dateKey)).length;
     const dayStatus = getDayStatus(dateKey);
 
     const mondayKey = getMondayKey(dateKey);
@@ -1931,8 +2135,9 @@ const App = (() => {
         <div class="stack-list">
           ${state.exercises.map(ex => {
             const val = getExerciseVal(selKey, ex.id);
-            const tone = getMetricTone(val, ex.target);
-            const met = val >= ex.target;
+            const dayTarget = getExerciseTargetForDate(ex, selKey);
+            const tone = getMetricTone(val, dayTarget);
+            const met = val >= dayTarget;
             const isDue = isExerciseDueOnDate(ex, selKey);
             const isBumpedEx = pendingFx && pendingFx.dateKey === selKey &&
               pendingFx.type === 'ex-change' && pendingFx.exId === ex.id;
@@ -1941,14 +2146,15 @@ const App = (() => {
             return `
               <div class="surface-inset editor-row ${isTargetHitEx ? 'fx-target-met' : ''}" style="${isDue ? '' : 'opacity:0.78;'}">
                 <div style="min-width:0;">
-                  <div style="display:flex;align-items:center;gap:6px;">
+                  <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
                     <span class="ex-title">${escapeHtml(ex.name)}</span>
                     ${ex.scheduleMode === 'custom'
                       ? (isDue ? '<span class="due-badge">Due</span>' : '<span class="rest-badge">Rest</span>')
                       : ''}
+                    ${dayTarget !== ex.target ? `<span class="rest-badge" title="Target active on this date">Then ${dayTarget}</span>` : ''}
                   </div>
                   <div class="tabular-nums ${tone.text}" style="font-size:0.75rem;font-weight:600;">
-                    ${val} / ${ex.target} ${escapeHtml(ex.unit)}
+                    ${val} / ${dayTarget} ${escapeHtml(ex.unit)}
                   </div>
                 </div>
 
@@ -1967,8 +2173,8 @@ const App = (() => {
                     <button class="mini-btn tabular-nums" onclick="App.BumpExercise('${selKey}', '${ex.id}', 5)">+5</button>
                     <button class="mini-btn tabular-nums"
                             style="${met ? 'background:rgba(16,185,129,0.2);border-color:rgba(16,185,129,0.5);' : ''}color:var(--emerald-400);"
-                            onclick="App.SetExactExercise('${selKey}', '${ex.id}', ${ex.target})">
-                      ${ex.target}
+                            onclick="App.SetExactExercise('${selKey}', '${ex.id}', ${dayTarget})">
+                      ${dayTarget}
                     </button>
                   </div>
                 `}
@@ -1991,18 +2197,20 @@ const App = (() => {
         const k = addDays(today, -i);
         const dt = parseDateKey(k);
         const v = getExerciseVal(k, ex.id);
+        const t = getExerciseTargetForDate(ex, k);
         const isCurrent = i === 0;
         let hex = '#EF4444';
-        if (v >= ex.target) hex = '#10B981';
+        if (v >= t) hex = '#10B981';
         else if (v > 0) hex = '#F59E0B';
         points.push({
           short: isCurrent ? 'Tdy' : String(dt.getDate()),
           v,
+          target: t,
           isCurrent,
           hex
         });
       }
-      return { subtitle: 'Daily total vs. daily target', points };
+      return { subtitle: 'Daily total vs. target active that day', points };
     }
 
     if (period === 'weekly') {
@@ -2012,22 +2220,25 @@ const App = (() => {
         const mKey = addDays(curMon, -w * 7);
         const wkNum = getISOWeekNumber(mKey);
         let sum = 0;
+        let targetSum = 0;
         let daysCount = 0;
         for (let d = 0; d < 7; d++) {
           const k = addDays(mKey, d);
           if (k <= today) {
             sum += getExerciseVal(k, ex.id);
+            targetSum += getExerciseTargetForDate(ex, k);
             daysCount++;
           }
         }
         const v = daysCount > 0 ? Math.round(sum / daysCount) : 0;
+        const t = daysCount > 0 ? Math.round(targetSum / daysCount) : getExerciseTargetForDate(ex, today);
         const isCurrent = w === 0;
         let hex = '#EF4444';
-        if (v >= ex.target) hex = '#10B981';
+        if (v >= t) hex = '#10B981';
         else if (v > 0) hex = '#F59E0B';
-        points.push({ short: `W${wkNum}`, v, isCurrent, hex });
+        points.push({ short: `W${wkNum}`, v, target: t, isCurrent, hex });
       }
-      return { subtitle: 'Weekly daily-avg vs. daily target', points };
+      return { subtitle: 'Weekly daily-avg vs. target', points };
     }
 
     if (period === 'monthly') {
@@ -2040,22 +2251,25 @@ const App = (() => {
         const short = d.toLocaleDateString('en-US', { month: 'short' });
         const lastDay = new Date(yr, mo + 1, 0).getDate();
         let sum = 0;
+        let targetSum = 0;
         let count = 0;
         for (let day = 1; day <= lastDay; day++) {
           const k = toDateKey(new Date(yr, mo, day, 12, 0, 0));
           if (k <= today && k >= state.trackingStartDate) {
             sum += getExerciseVal(k, ex.id);
+            targetSum += getExerciseTargetForDate(ex, k);
             count++;
           }
         }
         const v = count > 0 ? Math.round(sum / count) : 0;
+        const t = count > 0 ? Math.round(targetSum / count) : getExerciseTargetForDate(ex, today);
         const isCurrent = m === 0;
         let hex = '#EF4444';
-        if (v >= ex.target) hex = '#10B981';
+        if (v >= t) hex = '#10B981';
         else if (v > 0) hex = '#F59E0B';
-        points.push({ short, v, isCurrent, hex });
+        points.push({ short, v, target: t, isCurrent, hex });
       }
-      return { subtitle: 'Monthly daily-avg vs. daily target', points };
+      return { subtitle: 'Monthly daily-avg vs. target', points };
     }
 
     // 'all': Divide range from trackingStartDate to today into 7 equal buckets
@@ -2066,39 +2280,45 @@ const App = (() => {
       const endKey = addDays(today, -b * bucketSize);
       const startKey = addDays(endKey, -(bucketSize - 1));
       let sum = 0;
+      let targetSum = 0;
       let count = 0;
       let cursor = startKey;
       while (cursor <= endKey && cursor <= today) {
         if (cursor >= state.trackingStartDate) {
           sum += getExerciseVal(cursor, ex.id);
+          targetSum += getExerciseTargetForDate(ex, cursor);
           count++;
         }
         cursor = addDays(cursor, 1);
       }
       const v = count > 0 ? Math.round(sum / count) : 0;
+      const t = count > 0 ? Math.round(targetSum / count) : getExerciseTargetForDate(ex, today);
       const isCurrent = b === 0;
       const dt = parseDateKey(endKey);
       const short = dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
       let hex = '#EF4444';
-      if (v >= ex.target) hex = '#10B981';
+      if (v >= t) hex = '#10B981';
       else if (v > 0) hex = '#F59E0B';
-      points.push({ short, v, isCurrent, hex });
+      points.push({ short, v, target: t, isCurrent, hex });
     }
-    return { subtitle: 'All-time progression vs. daily target', points };
+    return { subtitle: 'All-time progression vs. target', points };
   }
 
   function renderChartsScreen() {
+    const today = toDateKey();
     const activeEx = state.exercises.find(e => e.id === ui.chartExerciseId) || state.exercises[0];
+    const currentTarget = getExerciseTargetForDate(activeEx, today);
     const periodData = buildChartSeries(activeEx, ui.chartPeriod);
     const series = periodData.points;
 
-    const maxVal = Math.ceil(Math.max(activeEx.target * 1.25, ...series.map(s => s.v), 10) / 10) * 10;
-    const hitCount = series.filter(s => s.v >= activeEx.target).length;
+    const maxVal = Math.ceil(Math.max(currentTarget * 1.25, ...series.map(s => Math.max(s.v, s.target || 0)), 10) / 10) * 10;
+    const hitCount = series.filter(s => s.v >= (s.target || currentTarget)).length;
     const hitRatePct = Math.round((hitCount / Math.max(1, series.length)) * 100);
     const periodAvg = Math.round(series.reduce((acc, s) => acc + s.v, 0) / Math.max(1, series.length));
-    const avgTone = getMetricTone(periodAvg, activeEx.target);
+    const avgTone = getMetricTone(periodAvg, currentTarget);
     const latestVal = series[series.length - 1].v;
-    const latestTone = getMetricTone(latestVal, activeEx.target);
+    const latestTarget = series[series.length - 1].target || currentTarget;
+    const latestTone = getMetricTone(latestVal, latestTarget);
 
     // Compute All-Time Daily PR for activeEx
     let allTimePR = 0;
@@ -2106,9 +2326,7 @@ const App = (() => {
       const val = getExerciseVal(k, activeEx.id);
       if (val > allTimePR) allTimePR = val;
     });
-    const prTone = getMetricTone(allTimePR, activeEx.target);
-
-    const today = toDateKey();
+    const prTone = getMetricTone(allTimePR, currentTarget);
     const curMon = getMondayKey(today);
     const gymWeeks = [];
     for (let w = 5; w >= 0; w--) {
@@ -2168,13 +2386,13 @@ const App = (() => {
         <div class="card-head" style="margin-bottom:8px;">
           <span class="section-sub">${periodData.subtitle}</span>
           <span class="section-sub tabular-nums">
-            Latest: <strong class="${latestTone.text}">${latestVal} / ${activeEx.target}</strong> • Hit <strong class="text-white">${hitCount}/${series.length}</strong>
+            Latest: <strong class="${latestTone.text}">${latestVal} / ${latestTarget}</strong> • Hit <strong class="text-white">${hitCount}/${series.length}</strong>
           </span>
         </div>
 
         ${ui.chartStyle === 'area'
-          ? renderSvgCurve(series, maxVal, activeEx.target)
-          : renderBarsPlot(series, maxVal, activeEx.target)
+          ? renderSvgCurve(series, maxVal, currentTarget)
+          : renderBarsPlot(series, maxVal, currentTarget)
         }
 
         <!-- Row 4: Period Avg • All-Time PR • Hit Rate Summary -->
@@ -2204,12 +2422,13 @@ const App = (() => {
         <div class="snapshot-grid">
           ${state.exercises.map(ex => {
             const v = getExerciseVal(today, ex.id);
+            const dayTarget = getExerciseTargetForDate(ex, today);
             const due = isExerciseDueOnDate(ex, today);
-            const tone = getMetricTone(v, ex.target);
+            const tone = getMetricTone(v, dayTarget);
             const isSel = ex.id === activeEx.id;
             const statusText = due
-              ? `${v}/${ex.target}`
-              : (v > 0 ? `${v}/${ex.target} OPT` : 'REST');
+              ? `${v}/${dayTarget}`
+              : (v > 0 ? `${v}/${dayTarget} OPT` : 'REST');
             const statusCls = due ? tone.text : (v > 0 ? 'text-sky' : 'text-muted');
             return `
               <button class="surface-inset snapshot-tile ${isSel ? 'active' : ''} smooth-ui"
@@ -3080,7 +3299,7 @@ const App = (() => {
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=18').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=19').then((reg) => {
         if (reg && reg.update) reg.update();
       }).catch(() => {});
     });
@@ -3195,9 +3414,11 @@ const App = (() => {
       const log = getDayLog(dateKey);
       const hitIds = [];
       dueExercises.forEach(ex => {
+        const dayTarget = getExerciseTargetForDate(ex, dateKey);
+        stampLogTargetForDate(log, ex, dateKey);
         const cur = Number(log.exercises[ex.id]) || 0;
-        if (cur < ex.target) {
-          log.exercises[ex.id] = ex.target;
+        if (cur < dayTarget) {
+          log.exercises[ex.id] = dayTarget;
           hitIds.push(ex.id);
         }
       });
@@ -3215,7 +3436,9 @@ const App = (() => {
       const nextVal = Math.max(0, prevVal + delta);
       log.exercises[exId] = nextVal;
       const exObj = state.exercises.find(e => e.id === exId);
-      const hitTarget = Boolean(exObj && prevVal < exObj.target && nextVal >= exObj.target);
+      const dayTarget = exObj ? getExerciseTargetForDate(exObj, dateKey) : 1;
+      if (exObj) stampLogTargetForDate(log, exObj, dateKey);
+      const hitTarget = Boolean(exObj && prevVal < dayTarget && nextVal >= dayTarget);
       pendingFx = { type: 'ex-change', exId, dateKey, hitTarget };
       saveState(true);
     },
@@ -3229,7 +3452,9 @@ const App = (() => {
       const nextVal = Math.max(0, Number(val) || 0);
       log.exercises[exId] = nextVal;
       const exObj = state.exercises.find(e => e.id === exId);
-      const hitTarget = Boolean(exObj && prevVal < exObj.target && nextVal >= exObj.target);
+      const dayTarget = exObj ? getExerciseTargetForDate(exObj, dateKey) : 1;
+      if (exObj) stampLogTargetForDate(log, exObj, dateKey);
+      const hitTarget = Boolean(exObj && prevVal < dayTarget && nextVal >= dayTarget);
       pendingFx = { type: 'ex-change', exId, dateKey, hitTarget };
       saveState(true);
     },
@@ -3286,9 +3511,12 @@ const App = (() => {
     UpdateTarget(exId, val) {
       const ex = state.exercises.find(e => e.id === exId);
       if (ex) {
-        ex.target = Math.max(1, Number(val) || 1);
+        const prevTarget = Math.max(1, Number(ex.target) || 1);
+        const nextTarget = Math.max(1, Number(val) || 1);
+        recordTargetChange(exId, prevTarget, nextTarget, toDateKey());
+        ex.target = nextTarget;
         saveState(true);
-        showToast(`Updated ${ex.name} target to ${ex.target} ${ex.unit}`);
+        showToast(`Updated ${ex.name} target to ${ex.target} ${ex.unit} (from Today forward)`);
       }
     },
     MoveExercise(id, delta) {
@@ -3325,6 +3553,10 @@ const App = (() => {
         scheduleTargetCount: 7,
         scheduleDays: [0, 1, 2, 3, 4, 5, 6]
       });
+      if (!state.targetHistory || typeof state.targetHistory !== 'object') {
+        state.targetHistory = {};
+      }
+      state.targetHistory[id] = [{ date: toDateKey(), target }];
       ui.confirmRemoveExId = null;
       pendingFx = { type: 'goal-move', exId: id };
       saveState(true);
@@ -3343,6 +3575,9 @@ const App = (() => {
       }
       ui.confirmRemoveExId = null;
       state.exercises = state.exercises.filter(e => e.id !== id);
+      if (state.targetHistory && state.targetHistory[id]) {
+        delete state.targetHistory[id];
+      }
       if (ui.chartExerciseId === id) {
         ui.chartExerciseId = state.exercises[0].id;
       }
@@ -3424,10 +3659,16 @@ const App = (() => {
       saveState(true);
     },
     SetGymScheduleMode(mode) {
+      const prevRule = {
+        mode: state.gymScheduleMode,
+        target: state.weeklyGymTarget,
+        days: [...(state.gymScheduleDays || [])]
+      };
       if (mode === 'daily') {
         state.gymScheduleMode = 'daily';
         state.weeklyGymTarget = 7;
         state.gymScheduleDays = [0, 1, 2, 3, 4, 5, 6];
+        recordGymRuleChange(prevRule);
         saveState(true);
         showToast('Gym schedule: Daily (7d/wk)');
       } else {
@@ -3444,6 +3685,7 @@ const App = (() => {
         state.gymScheduleMode = 'custom';
         state.weeklyGymTarget = cnt;
         state.gymScheduleDays = nextDays;
+        recordGymRuleChange(prevRule);
         saveState(true);
         showToast(`Gym schedule: ${formatScheduleSummary('custom', nextDays, cnt)}`);
       }
@@ -3454,6 +3696,11 @@ const App = (() => {
         App.SetGymScheduleMode('daily');
         return;
       }
+      const prevRule = {
+        mode: state.gymScheduleMode,
+        target: state.weeklyGymTarget,
+        days: [...(state.gymScheduleDays || [])]
+      };
       const c = Math.max(1, Math.min(6, raw));
       const base = (state.gymScheduleMode === 'custom' && Array.isArray(state.gymScheduleDays) && state.gymScheduleDays.length < 7)
         ? state.gymScheduleDays
@@ -3467,12 +3714,18 @@ const App = (() => {
       state.gymScheduleMode = 'custom';
       state.weeklyGymTarget = c;
       state.gymScheduleDays = nextDays;
+      recordGymRuleChange(prevRule);
       saveState(true);
       showToast(`Weekly gym schedule: ${formatScheduleSummary('custom', nextDays, c)}`);
     },
     ToggleGymScheduleDay(dow) {
       const d = Number(dow);
       if (!Number.isInteger(d) || d < 0 || d > 6) return;
+      const prevRule = {
+        mode: state.gymScheduleMode,
+        target: state.weeklyGymTarget,
+        days: [...(state.gymScheduleDays || [])]
+      };
       const targetCount = Math.max(1, Math.min(6, Number(state.weeklyGymTarget) || 4));
       let days = (state.gymScheduleMode === 'custom' && Array.isArray(state.gymScheduleDays))
         ? normalizeDaysList(state.gymScheduleDays, targetCount)
@@ -3490,6 +3743,7 @@ const App = (() => {
       state.gymScheduleMode = 'custom';
       state.weeklyGymTarget = targetCount;
       state.gymScheduleDays = days;
+      recordGymRuleChange(prevRule);
       saveState(true);
     },
     RescheduleGymDay(fromDate, toDate) {
@@ -3845,6 +4099,16 @@ const App = (() => {
       state.logs = {};
       state.gymReschedules = {};
       state.trackingStartDate = today;
+      state.targetHistory = {};
+      state.exercises.forEach(ex => {
+        state.targetHistory[ex.id] = [{ date: today, target: ex.target }];
+      });
+      state.gymHistory = [{
+        week: getMondayKey(today),
+        mode: state.gymScheduleMode,
+        target: state.weeklyGymTarget,
+        days: [...(state.gymScheduleDays || [])]
+      }];
       ui.activeDate = today;
       ui.selectedCalDate = today;
       ui.showResetConfirm = false;
