@@ -626,14 +626,20 @@ const App = (() => {
     state.gymHistory = Object.keys(byWeek).sort().map(w => byWeek[w]);
   }
 
-  // --- Unified 3-State Color Helper ---
+  // --- Unified 3-State Color Helper (+ Neutral Muted Gray for Rest Days) ---
   // Completed (>= target) -> Green
-  // Incomplete (> 0 && < target) -> Amber
-  // Not done (0) -> Red
-  function getMetricTone(val, target) {
+  // Incomplete (> 0 && < target) -> Amber (or Sky for optional rest-day bonus)
+  // Not done (0) -> Red when due, Muted Gray when rest day
+  function getMetricTone(val, target, isDue = true) {
     const v = Number(val) || 0;
     if (v >= target) {
       return { status: 'green', text: 'text-emerald', bg: 'bg-emerald', hex: '#10B981' };
+    }
+    if (!isDue) {
+      if (v > 0) {
+        return { status: 'bonus', text: 'text-sky', bg: 'bg-sky', hex: '#38BDF8' };
+      }
+      return { status: 'rest', text: 'text-muted', bg: '', hex: '#64748B' };
     }
     if (v > 0) {
       return { status: 'amber', text: 'text-amber', bg: 'bg-amber', hex: '#F59E0B' };
@@ -1659,6 +1665,9 @@ const App = (() => {
     } else if (gymSum.count > 0) {
       hdrGymStatus.textContent = 'In Prog';
       hdrGymStatus.className = 'tabular-nums text-amber';
+    } else if (gymSum.scheduledTotal > 0 && gymSum.missedCount === 0) {
+      hdrGymStatus.textContent = 'Upcoming';
+      hdrGymStatus.className = 'tabular-nums text-muted';
     } else {
       hdrGymStatus.textContent = '0 Logged';
       hdrGymStatus.className = 'tabular-nums text-red';
@@ -1686,7 +1695,7 @@ const App = (() => {
     const current = getExerciseVal(dateKey, ex.id);
     const dayTarget = getExerciseTargetForDate(ex, dateKey);
     const pct = Math.min(100, Math.round((current / Math.max(1, dayTarget)) * 100));
-    const tone = getMetricTone(current, dayTarget);
+    const tone = getMetricTone(current, dayTarget, isDue);
     const done = current >= dayTarget;
     const isBumpedEx = pendingFx && pendingFx.dateKey === dateKey &&
       ((pendingFx.type === 'ex-change' && pendingFx.exId === ex.id) || pendingFx.type === 'complete-all');
@@ -1695,7 +1704,7 @@ const App = (() => {
        (pendingFx.type === 'complete-all' && pendingFx.hitIds && pendingFx.hitIds.includes(ex.id)));
 
     return `
-      <div class="surface-inset ex-box ${isTargetHitEx ? 'fx-target-met' : ''}" data-ex-id="${ex.id}" style="${isDue ? '' : 'opacity:0.86;'}">
+      <div class="surface-inset ex-box ${isTargetHitEx ? 'fx-target-met' : ''}" data-ex-id="${ex.id}" style="${isDue ? '' : (current === 0 ? 'opacity:0.78;' : 'opacity:0.92;')}">
         <div class="ex-top-line">
           <div style="display:flex;align-items:center;gap:6px;min-width:0;flex-wrap:wrap;">
             <span class="ex-title" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(ex.name)}</span>
@@ -2162,9 +2171,9 @@ const App = (() => {
           ${state.exercises.map(ex => {
             const val = getExerciseVal(selKey, ex.id);
             const dayTarget = getExerciseTargetForDate(ex, selKey);
-            const tone = getMetricTone(val, dayTarget);
-            const met = val >= dayTarget;
             const isDue = isExerciseDueOnDate(ex, selKey);
+            const tone = getMetricTone(val, dayTarget, isDue);
+            const met = val >= dayTarget;
             const isBumpedEx = pendingFx && pendingFx.dateKey === selKey &&
               pendingFx.type === 'ex-change' && pendingFx.exId === ex.id;
             const isTargetHitEx = isBumpedEx && pendingFx.hitTarget;
@@ -2186,7 +2195,7 @@ const App = (() => {
 
                 ${locked ? `
                   <div class="tabular-nums ${tone.text}" style="font-size:0.75rem;font-weight:700;">
-                    ${met ? 'Target Met' : val > 0 ? 'Incomplete' : 'Missed (0)'}
+                    ${met ? 'Target Met' : !isDue ? (val > 0 ? 'Optional' : 'Rest') : val > 0 ? 'Incomplete' : 'Missed (0)'}
                   </div>
                 ` : `
                   <div class="editor-controls">
@@ -2224,16 +2233,16 @@ const App = (() => {
         const dt = parseDateKey(k);
         const v = getExerciseVal(k, ex.id);
         const t = getExerciseTargetForDate(ex, k);
+        const due = isExerciseDueOnDate(ex, k);
+        const tone = getMetricTone(v, t, due);
         const isCurrent = i === 0;
-        let hex = '#EF4444';
-        if (v >= t) hex = '#10B981';
-        else if (v > 0) hex = '#F59E0B';
         points.push({
           short: isCurrent ? 'Tdy' : String(dt.getDate()),
           v,
           target: t,
+          isRest: !due && v === 0,
           isCurrent,
-          hex
+          hex: tone.hex
         });
       }
       return { subtitle: 'Daily total vs. target active that day', points };
@@ -2338,13 +2347,20 @@ const App = (() => {
     const series = periodData.points;
 
     const maxVal = Math.ceil(Math.max(currentTarget * 1.25, ...series.map(s => Math.max(s.v, s.target || 0)), 10) / 10) * 10;
-    const hitCount = series.filter(s => s.v >= (s.target || currentTarget)).length;
-    const hitRatePct = Math.round((hitCount / Math.max(1, series.length)) * 100);
+    const countable = series.filter(s => !s.isRest);
+    const hitDenom = countable.length > 0 ? countable.length : series.length;
+    const hitCount = (countable.length > 0 ? countable : series).filter(s => s.v >= (s.target || currentTarget)).length;
+    const hitRatePct = Math.round((hitCount / Math.max(1, hitDenom)) * 100);
     const periodAvg = Math.round(series.reduce((acc, s) => acc + s.v, 0) / Math.max(1, series.length));
     const avgTone = getMetricTone(periodAvg, currentTarget);
-    const latestVal = series[series.length - 1].v;
-    const latestTarget = series[series.length - 1].target || currentTarget;
-    const latestTone = getMetricTone(latestVal, latestTarget);
+    const latestPoint = series[series.length - 1];
+    const latestVal = latestPoint.v;
+    const latestTarget = latestPoint.target || currentTarget;
+    const latestTone = getMetricTone(
+      latestVal,
+      latestTarget,
+      ui.chartPeriod === 'daily' ? isExerciseDueOnDate(activeEx, today) : true
+    );
 
     // Compute All-Time Daily PR for activeEx
     let allTimePR = 0;
@@ -2412,7 +2428,7 @@ const App = (() => {
         <div class="card-head" style="margin-bottom:8px;">
           <span class="section-sub">${periodData.subtitle}</span>
           <span class="section-sub tabular-nums">
-            Latest: <strong class="${latestTone.text}">${latestVal} / ${latestTarget}</strong> • Hit <strong class="text-white">${hitCount}/${series.length}</strong>
+            Latest: <strong class="${latestTone.text}">${latestVal} / ${latestTarget}</strong> • Hit <strong class="text-white">${hitCount}/${hitDenom}</strong>
           </span>
         </div>
 
@@ -2450,7 +2466,7 @@ const App = (() => {
             const v = getExerciseVal(today, ex.id);
             const dayTarget = getExerciseTargetForDate(ex, today);
             const due = isExerciseDueOnDate(ex, today);
-            const tone = getMetricTone(v, dayTarget);
+            const tone = getMetricTone(v, dayTarget, due);
             const isSel = ex.id === activeEx.id;
             const statusText = due
               ? `${v}/${dayTarget}`
@@ -3325,7 +3341,7 @@ const App = (() => {
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=20').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=21').then((reg) => {
         if (reg && reg.update) reg.update();
       }).catch(() => {});
     });
