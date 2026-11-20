@@ -8,13 +8,25 @@ const STORAGE_KEY = 'ironhabit_state_v2';
 const SESSION_UNLOCK_KEY = 'ironhabit_session_unlocked';
 const EDIT_WINDOW_DAYS = 7;
 const DEFAULT_PROFILE_NAME = 'Athlete';
+const DEFAULT_DRIVE_FOLDER = 'IronHabit';
 
-function buildGDriveScriptSource(passkey) {
+function sanitizeDriveFolderName(name) {
+  const cleaned = String(name || '')
+    .replace(/[\\/:*?"<>|\r\n]+/g, '')
+    .trim();
+  return cleaned || DEFAULT_DRIVE_FOLDER;
+}
+
+function buildGDriveScriptSource(passkey, folderName) {
   const cleanKey = String(passkey || 'CHANGE_THIS_TO_YOUR_SECRET_PASSKEY')
     .replace(/\\/g, '\\\\')
     .replace(/'/g, "\\'")
     .replace(/\r?\n/g, '');
-  return `const FILE_NAME = 'fitness-tracker-data.json';
+  const cleanFolder = sanitizeDriveFolderName(folderName)
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'");
+  return `const FOLDER_NAME = '${cleanFolder}';
+const FILE_NAME = 'fitness-tracker-data.json';
 const SECRET_PASSKEY = '${cleanKey}';
 
 function timingSafeEqualStr(a, b) {
@@ -52,13 +64,39 @@ function isAuthorized(key) {
   }
 }
 
+function getOrCreateFolder() {
+  const folderName = String(FOLDER_NAME || 'IronHabit').trim() || 'IronHabit';
+  const folders = DriveApp.getFoldersByName(folderName);
+  while (folders.hasNext()) {
+    const folder = folders.next();
+    if (!folder.isTrashed()) return folder;
+  }
+  return DriveApp.createFolder(folderName);
+}
+
 function getOrCreateFile() {
-  const files = DriveApp.getFilesByName(FILE_NAME);
-  while (files.hasNext()) {
-    const file = files.next();
+  const folder = getOrCreateFolder();
+  const folderFiles = folder.getFilesByName(FILE_NAME);
+  while (folderFiles.hasNext()) {
+    const file = folderFiles.next();
     if (!file.isTrashed()) return file;
   }
-  return DriveApp.createFile(FILE_NAME, JSON.stringify({ version: 2, updatedAt: 0, payload: null }, null, 2), MimeType.PLAIN_TEXT);
+  const allFiles = DriveApp.getFilesByName(FILE_NAME);
+  while (allFiles.hasNext()) {
+    const existing = allFiles.next();
+    if (!existing.isTrashed()) {
+      try {
+        existing.moveTo(folder);
+      } catch (_) {
+        try {
+          folder.addFile(existing);
+          DriveApp.getRootFolder().removeFile(existing);
+        } catch (__) {}
+      }
+      return existing;
+    }
+  }
+  return folder.createFile(FILE_NAME, JSON.stringify({ version: 2, updatedAt: 0, payload: null }, null, 2), MimeType.PLAIN_TEXT);
 }
 
 function doGet(e) {
@@ -90,7 +128,7 @@ function doPost(e) {
     };
     const file = getOrCreateFile();
     file.setContent(JSON.stringify(toSave, null, 2));
-    return ContentService.createTextOutput(JSON.stringify({ ok: true, updatedAt: toSave.updatedAt })).setMimeType(ContentService.MimeType.JSON);
+    return ContentService.createTextOutput(JSON.stringify({ ok: true, updatedAt: toSave.updatedAt, folder: FOLDER_NAME })).setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
     return ContentService
       .createTextOutput(JSON.stringify({ ok: false, error: String(err) }))
@@ -260,6 +298,7 @@ const App = (() => {
     if (!st.profileName || st.profileName === 'Kingsley') {
       st.profileName = DEFAULT_PROFILE_NAME;
     }
+    st.driveFolderName = sanitizeDriveFolderName(st.driveFolderName);
     const targetGym = Math.max(1, Math.min(7, Number(st.weeklyGymTarget) || 4));
     st.weeklyGymTarget = targetGym;
     if (st.gymScheduleMode !== 'daily' && st.gymScheduleMode !== 'custom') {
@@ -429,6 +468,7 @@ const App = (() => {
       gymHistory: [],
       gymReschedules: {}, // { [weekSunKey]: [{ from, to }] }
       syncProvider: 'gdrive', // 'gdrive' (Passkey Google Drive) | 'gist' (Private GitHub Gist)
+      driveFolderName: DEFAULT_DRIVE_FOLDER,
       syncUrl: '',
       syncPasskey: '',
       githubToken: '',
@@ -1511,6 +1551,7 @@ const App = (() => {
   function captureSettingsInputsIntoState() {
     const passEl = document.getElementById('sec-passkey-input');
     const urlEl = document.getElementById('sync-url-input');
+    const folderEl = document.getElementById('drive-folder-input');
     const tokEl = document.getElementById('github-token-input');
     const idEl = document.getElementById('gist-id-input');
     let changed = false;
@@ -1521,6 +1562,13 @@ const App = (() => {
     if (urlEl && urlEl.value.trim() && urlEl.value.trim() !== state.syncUrl) {
       state.syncUrl = urlEl.value.trim();
       changed = true;
+    }
+    if (folderEl && folderEl.value.trim()) {
+      const nextFolder = sanitizeDriveFolderName(folderEl.value);
+      if (nextFolder !== state.driveFolderName) {
+        state.driveFolderName = nextFolder;
+        changed = true;
+      }
     }
     if (tokEl && tokEl.value.trim() && tokEl.value.trim() !== state.githubToken) {
       state.githubToken = tokEl.value.trim();
@@ -3347,9 +3395,13 @@ const App = (() => {
             </div>
           ` : `
             <div class="security-note-box">
-              <strong>Passkey-Verified Google Drive Sync:</strong> Every <code>GET</code> &amp; <code>POST</code> request verifies your Secret Passkey from <strong>Security &amp; Lock</strong> inside your Apps Script.
+              <strong>Passkey-Verified Folder Sync:</strong> Stores your data inside <code>/${escapeHtml(state.driveFolderName || DEFAULT_DRIVE_FOLDER)}/fitness-tracker-data.json</code> in Google Drive (and automatically moves any root-level <code>fitness-tracker-data.json</code> into that folder).
             </div>
             <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;">
+              <input id="drive-folder-input" type="text" class="text-input" style="width:140px;"
+                     placeholder="Drive Folder (e.g. IronHabit)"
+                     title="Google Drive directory name for fitness-tracker-data.json"
+                     value="${escapeHtml(state.driveFolderName || DEFAULT_DRIVE_FOLDER)}" />
               <input id="sync-url-input" type="url" class="text-input" style="flex:1;min-width:200px;"
                      placeholder="Paste Google Apps Script Web App URL (https://script.google.com/macros/s/.../exec)"
                      value="${escapeHtml(state.syncUrl || '')}" />
@@ -3370,8 +3422,8 @@ const App = (() => {
           </summary>
           <div class="settings-accordion-body">
             <div class="section-sub" style="margin-bottom:10px;line-height:1.5;">
-              1. Set your Secret Passkey in <strong>Security &amp; Lock</strong>.<br />
-              2. Copy the pre-filled script below into <strong>script.google.com</strong>, deploy as a Web App (<em>Execute as: Me</em>), and paste the <code>/exec</code> URL above.
+              1. Set your Secret Passkey in <strong>Security &amp; Lock</strong> and choose your Drive folder name above (default: <code>${escapeHtml(state.driveFolderName || DEFAULT_DRIVE_FOLDER)}</code>).<br />
+              2. Copy the pre-filled script below into <strong>script.google.com</strong> and deploy as a Web App (<em>Execute as: Me</em>). Any existing root <code>fitness-tracker-data.json</code> is automatically moved into <code>/${escapeHtml(state.driveFolderName || DEFAULT_DRIVE_FOLDER)}/</code>.
             </div>
             <button class="step-btn smooth-ui" style="width:100%;" onclick="App.CopyDriveScript()">Copy Protected Script</button>
           </div>
@@ -3678,7 +3730,7 @@ const App = (() => {
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js?v=22').then((reg) => {
+      navigator.serviceWorker.register('./sw.js?v=23').then((reg) => {
         if (reg && reg.update) reg.update();
       }).catch(() => {});
     });
@@ -4414,8 +4466,12 @@ const App = (() => {
     },
     SaveSyncUrl() {
       const el = document.getElementById('sync-url-input');
+      const folderEl = document.getElementById('drive-folder-input');
       const passEl = document.getElementById('sec-passkey-input');
       state.syncUrl = el ? el.value.trim() : '';
+      if (folderEl && folderEl.value.trim()) {
+        state.driveFolderName = sanitizeDriveFolderName(folderEl.value);
+      }
       if (passEl && passEl.value.trim()) {
         state.syncPasskey = passEl.value.trim();
       }
@@ -4426,7 +4482,7 @@ const App = (() => {
       } else if (isCloudConfigured(state)) {
         pullFromCloud({ silent: false, onlyIfNewer: false, pushIfEmpty: true });
       } else {
-        showToast('Switched to Local mode');
+        showToast(`Saved Drive folder (/${state.driveFolderName}/) — Local mode`);
       }
     },
     PushDriveManual() {
@@ -4437,10 +4493,16 @@ const App = (() => {
     },
     CopyDriveScript() {
       const passEl = document.getElementById('sec-passkey-input');
+      const folderEl = document.getElementById('drive-folder-input');
       const key = (passEl && passEl.value.trim()) ? passEl.value.trim() : state.syncPasskey;
-      const src = buildGDriveScriptSource(key);
+      if (folderEl && folderEl.value.trim()) {
+        state.driveFolderName = sanitizeDriveFolderName(folderEl.value);
+        saveState(false);
+      }
+      const folder = state.driveFolderName || DEFAULT_DRIVE_FOLDER;
+      const src = buildGDriveScriptSource(key, folder);
       navigator.clipboard.writeText(src).then(() => {
-        showToast(key ? 'Copied script pre-filled with your Passkey' : 'Copied Passkey-protected Drive script');
+        showToast(key ? `Copied script for /${folder}/ pre-filled with your Passkey` : `Copied Drive script for /${folder}/`);
       }).catch(() => {
         showToast('See google-drive-sync.gs in your project directory');
       });

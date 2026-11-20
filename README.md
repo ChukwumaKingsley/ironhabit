@@ -64,8 +64,8 @@ By default, all data stays locally in your browser. If you enable cross-device s
 
 ### Option B: Passkey-Protected Google Drive (Apps Script)
 1. Open **Settings → Security & Lock** and set a strong **Secret Passkey**.
-2. Open **Settings → Cloud Sync → Google Drive (Passkey)** and click **Copy Protected Script** (or copy `google-drive-sync.gs` and replace `CHANGE_THIS_TO_YOUR_SECRET_PASSKEY` with your Secret Passkey before deploying).
-3. At [script.google.com](https://script.google.com), create a new project, paste the script, and click **Deploy → New deployment → Web app** (*Execute as: Me*, *Who has access: Anyone*).
+2. Open **Settings → Cloud Sync → Google Drive (Passkey)**, confirm or customize your **Drive Folder** name (defaults to `IronHabit`, storing data at `/IronHabit/fitness-tracker-data.json`), and click **Copy Protected Script** (or copy `google-drive-sync.gs` and replace `CHANGE_THIS_TO_YOUR_SECRET_PASSKEY` with your Secret Passkey before deploying).
+3. At [script.google.com](https://script.google.com), create or open your project, paste the script, and click **Deploy → New deployment → Web app** (*Execute as: Me*, *Who has access: Anyone*). Any existing root-level `fitness-tracker-data.json` in your Drive is automatically moved into `/IronHabit/fitness-tracker-data.json`.
 4. Paste the resulting `/exec` Web App URL into **Settings → Cloud Sync** and click **Save**.
 
 ### Security Hygiene for Self-Hosters

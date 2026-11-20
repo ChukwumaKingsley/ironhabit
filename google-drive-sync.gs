@@ -1,12 +1,14 @@
 /**
- * IRONHABIT — Google Drive Auto-Sync Endpoint (Passkey-Protected)
+ * IRONHABIT — Google Drive Auto-Sync Endpoint (Passkey-Protected + Dedicated Folder)
  *
- * Security:
- * - Every GET and POST request must include your Passkey.
- * - Uses constant-time string comparison (timingSafeEqualStr) and LockService concurrency guards.
- * - Skips trashed files when locating fitness-tracker-data.json in Google Drive.
+ * Security & Storage Organization:
+ * - Stores fitness-tracker-data.json inside a dedicated Google Drive directory (FOLDER_NAME = 'IronHabit').
+ * - Automatically migrates any existing root-level fitness-tracker-data.json into the IronHabit folder.
+ * - Every GET and POST request must include your Passkey (checked via constant-time timingSafeEqualStr).
+ * - Uses LockService concurrency guards and skips trashed folders/files.
  */
 
+const FOLDER_NAME = 'IronHabit';
 const FILE_NAME = 'fitness-tracker-data.json';
 const SECRET_PASSKEY = 'CHANGE_THIS_TO_YOUR_SECRET_PASSKEY';
 
@@ -47,16 +49,50 @@ function isAuthorized(key) {
   }
 }
 
+function getOrCreateFolder() {
+  const folderName = String(FOLDER_NAME || 'IronHabit').trim() || 'IronHabit';
+  const folders = DriveApp.getFoldersByName(folderName);
+  while (folders.hasNext()) {
+    const folder = folders.next();
+    if (!folder.isTrashed()) {
+      return folder;
+    }
+  }
+  return DriveApp.createFolder(folderName);
+}
+
 function getOrCreateFile() {
-  const files = DriveApp.getFilesByName(FILE_NAME);
-  while (files.hasNext()) {
-    const file = files.next();
+  const folder = getOrCreateFolder();
+
+  // 1. Check inside the dedicated IronHabit directory first
+  const folderFiles = folder.getFilesByName(FILE_NAME);
+  while (folderFiles.hasNext()) {
+    const file = folderFiles.next();
     if (!file.isTrashed()) {
       return file;
     }
   }
+
+  // 2. If an older fitness-tracker-data.json exists in the root/base Drive directory, move it into the folder
+  const allFiles = DriveApp.getFilesByName(FILE_NAME);
+  while (allFiles.hasNext()) {
+    const existing = allFiles.next();
+    if (!existing.isTrashed()) {
+      try {
+        existing.moveTo(folder);
+      } catch (_) {
+        try {
+          folder.addFile(existing);
+          DriveApp.getRootFolder().removeFile(existing);
+        } catch (__) {}
+      }
+      return existing;
+    }
+  }
+
+  // 3. Otherwise create a fresh file directly inside the dedicated folder
   const initialPayload = JSON.stringify({ version: 2, updatedAt: 0, payload: null }, null, 2);
-  return DriveApp.createFile(FILE_NAME, initialPayload, MimeType.PLAIN_TEXT);
+  return folder.createFile(FILE_NAME, initialPayload, MimeType.PLAIN_TEXT);
 }
 
 function doGet(e) {
@@ -93,7 +129,7 @@ function doPost(e) {
     const file = getOrCreateFile();
     file.setContent(JSON.stringify(toSave, null, 2));
     return ContentService
-      .createTextOutput(JSON.stringify({ ok: true, updatedAt: toSave.updatedAt }))
+      .createTextOutput(JSON.stringify({ ok: true, updatedAt: toSave.updatedAt, folder: FOLDER_NAME }))
       .setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
     return ContentService
